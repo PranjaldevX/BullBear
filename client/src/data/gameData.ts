@@ -1,4 +1,4 @@
-import { Avatar, Strategy, Scenario } from '@bvb/shared';
+import { Avatar, Strategy } from '@bvb/shared';
 
 export const AVATARS: Avatar[] = [
     {
