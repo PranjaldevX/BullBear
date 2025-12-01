@@ -4,7 +4,7 @@ import { Asset, AssetType } from '@bvb/shared';
 import { RiskMeter } from './RiskMeter';
 import { EventCard } from './EventCard';
 import { PowerUpBar } from './PowerUpBar';
-import { SentimentMeter } from './SentimentMeter';
+import { FinancialTermCard } from './FinancialTermCard';
 
 export const GameDashboard: React.FC = () => {
     const gameState = useGameStore(state => state.gameState);
@@ -269,7 +269,7 @@ export const GameDashboard: React.FC = () => {
 
                     <RiskMeter score={me?.riskScore || 0} />
 
-                    {gameState.sentiment && <SentimentMeter sentiment={gameState.sentiment} />}
+                    <FinancialTermCard />
 
                     {/* Show Event Card in Sidebar ONLY if NOT in popup mode */}
                     {!showEventPopup && gameState.activeEvent && <EventCard event={gameState.activeEvent} />}

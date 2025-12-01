@@ -27,22 +27,27 @@ export const useGameStore = create<GameStore>((set, get) => ({
     playerName: '',
 
     connect: (name: string) => {
+        console.log('Connecting to server with name:', name);
         const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io('http://localhost:3000');
 
         socket.on('connect', () => {
+            console.log('Socket connected:', socket.id);
             set({ isConnected: true, socket });
             socket.emit('joinGame', name);
         });
 
         socket.on('disconnect', () => {
+            console.log('Socket disconnected');
             set({ isConnected: false, socket: null });
         });
 
         socket.on('gameState', (state: GameState) => {
+            console.log('Received gameState:', state);
             set({ gameState: state });
         });
 
         socket.on('gameOver', (results: GameResult[]) => {
+            console.log('Received gameOver:', results);
             set({ gameResults: results });
         });
 
