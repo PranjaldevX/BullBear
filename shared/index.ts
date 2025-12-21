@@ -71,11 +71,21 @@ export interface MarketEvent {
   id: string;
   title: string;
   description: string;
-  affectedAssets: string[]; // Asset IDs
-  sentimentImpact: number; // -100 to +100 (normalized in logic if needed, but keeping simple number here)
+  affectedAssets: string[]; // Asset IDs or Types? "stocks", "bonds" etc.
+  sentiment: 'positive' | 'negative' | 'neutral';
+  intensity: 'low' | 'medium' | 'high';
+  tags: string[];
+  impact: Partial<Record<AssetType, number>>; // e.g. { STOCK: -0.15, BOND: 0.05 }
   duration: number;
   hint?: string;
   emoji?: string;
+
+  // New Sentiment Engine Fields
+  emotion?: string; // "Strong Positive", "Positive", etc.
+  sectors?: string[]; // "Technology", "Finance", etc.
+  impact_range_percent?: { min: number, max: number };
+  momentum_rounds?: number;
+  volatility_multiplier?: number;
 }
 
 export interface Scenario {

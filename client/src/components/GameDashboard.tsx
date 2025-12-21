@@ -59,7 +59,7 @@ export const GameDashboard: React.FC = () => {
 
             {/* Game Over Modal */}
             {gameResults && (
-                <div className="absolute inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center p-4 overflow-y-auto">
+                <div className="absolute inset-0 bg-black bg-opacity-90 z-50 flex items-start justify-center p-4 pt-10 overflow-y-auto">
                     <div className="bg-theme-surface border border-neon-blue rounded-lg p-8 max-w-3xl w-full shadow-[0_0_50px_rgba(59,130,246,0.5)] my-8 animate-slideUpFade">
                         <h2 className="text-4xl font-bold text-center text-neon-blue mb-6 animate-pulse">MARKET CLOSED</h2>
 
@@ -269,8 +269,6 @@ export const GameDashboard: React.FC = () => {
 
                     <RiskMeter score={me?.riskScore || 0} />
 
-                    <FinancialTermCard />
-
                     {/* Show Event Card in Sidebar ONLY if NOT in popup mode */}
                     {!showEventPopup && gameState.activeEvent && <EventCard event={gameState.activeEvent} />}
 
@@ -278,6 +276,8 @@ export const GameDashboard: React.FC = () => {
                         powerUps={me?.powerUps || []}
                         onUse={(id) => usePowerUp(id)}
                     />
+
+                    <FinancialTermCard />
                 </div>
             </div>
         </div >

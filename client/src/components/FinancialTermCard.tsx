@@ -26,7 +26,7 @@ export const FinancialTermCard: React.FC = () => {
                 <span>🎓</span> Financial Term
             </h2>
 
-            <div className="flex-1 flex flex-col justify-center">
+            <div className="flex-1 flex flex-col">
                 <div className="mb-2">
                     <span className="text-xs font-bold text-gray-500 uppercase tracking-wider border border-gray-700 px-2 py-0.5 rounded">
                         {currentTerm.category}

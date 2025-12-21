@@ -28,7 +28,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     connect: (name: string) => {
         console.log('Connecting to server with name:', name);
-        const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io('http://localhost:3000');
+        const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
+        console.log('Server URL:', serverUrl);
+        const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(serverUrl);
 
         socket.on('connect', () => {
             console.log('Socket connected:', socket.id);
@@ -97,7 +99,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         const { socket } = get();
         if (socket) {
             socket.emit('playAgain');
-            set({ gameResults: null }); // Clear local results immediately
+            // Do NOT clear gameResults immediately. Wait for gameState update to clean up.
         }
     }
 }));

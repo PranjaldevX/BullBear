@@ -11,6 +11,8 @@ import { AVATARS, STRATEGIES, SCENARIOS } from './data/gameData';
 
 const GAME_ROUNDS = 5;
 const ROUND_DURATION_MS = 35000; // 35 seconds
+const FRAMES_PER_SECOND = 1; // Update once per second
+const TOTAL_FRAMES = 35;
 const STARTING_CASH = 10000;
 
 export class GameManager {
@@ -48,7 +50,7 @@ export class GameManager {
         const apiKey = process.env.GEMINI_API_KEY;
         if (apiKey) {
             this.genAI = new GoogleGenerativeAI(apiKey);
-            this.model = this.genAI.getGenerativeModel({ model: "gemini-pro" });
+            this.model = this.genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         } else {
             console.warn("GEMINI_API_KEY not found in .env. Falling back to heuristic coach.");
         }
@@ -371,6 +373,7 @@ export class GameManager {
     }
 
     private resetGame() {
+        console.log("Resetting Game...");
         if (this.roundTimer) {
             clearInterval(this.roundTimer);
             this.roundTimer = null;
@@ -416,81 +419,54 @@ export class GameManager {
         }
 
         this.gameState.timeRemaining = ROUND_DURATION_MS / 1000;
-        this.gameState.activeEvent = null;
+
+        // Manage Active Event Duration
+        if (this.gameState.activeEvent && this.gameState.activeEvent.duration > 1) {
+            console.log(`Event ${this.gameState.activeEvent.title} continuing. Rounds left: ${this.gameState.activeEvent.duration}`);
+            this.gameState.activeEvent.duration--;
+        } else {
+            this.gameState.activeEvent = null;
+        }
 
         // Fear Zone in Final Round
         if (this.gameState.currentRound === this.gameState.maxRounds) {
             this.gameState.fearZoneActive = true;
         }
 
-        // Trigger event logic (simplified for now, maybe enhance later)
-        // Trigger event logic (30% chance)
-        if (Math.random() < 0.3 && !this.gameState.activeScenario) {
-            const event = MARKET_EVENTS[Math.floor(Math.random() * MARKET_EVENTS.length)];
-            this.gameState.activeEvent = {
-                id: event.id,
-                title: event.title,
-                description: event.description,
-                affectedAssets: event.affectedAssets,
-                sentimentImpact: event.sentimentImpact,
-                duration: event.duration,
-                hint: event.hint,
-                emoji: event.emoji
-            };
-
-            // Apply Sentiment Impact
-            event.affectedAssets.forEach(assetId => {
-                const asset = this.gameState.assets.find(a => a.id === assetId);
-                if (asset) {
-                    // Update sentiment: fade old + add new
-                    // We need to map assetId to AssetType for sentiment tracking
-                    // Assuming asset.type is correct
-                    const currentSentiment = this.gameState.sentiment[asset.type];
-                    // Formula: sentiment[A] = sentiment[A] * 0.70 + (impact * 0.30)
-                    // But impact is e.g. 28. Let's just add it but clamp it?
-                    // User formula: sentiment[A] = sentiment[A] * 0.70 + (impact * 100 * 0.30) -> wait, impact in user doc was percent?
-                    // User doc: "impact +X% or -X% drift... Sentiment Impact +28"
-                    // Let's use the provided numbers directly as raw additions but decayed.
-                    // New Sentiment = Old * 0.9 (decay) + Impact
-
-                    // Actually, let's follow the "Updating sentiment" section:
-                    // sentiment[A] = sentiment[A] * 0.70 + (impact * 100 * 0.30) ?? 
-                    // The user example table says "Sentiment Impact: +28".
-                    // Let's just ADD the impact to the current sentiment, but clamp at -100/100.
-
-                    let newSentiment = currentSentiment + event.sentimentImpact;
-                    newSentiment = Math.max(-100, Math.min(100, newSentiment));
-                    this.gameState.sentiment[asset.type] = newSentiment;
-                }
-            });
-
-            event.effect(this.gameState.assets);
-        } else {
-            // Decay sentiment if no event for this asset?
-            // Actually decay happens every round regardless.
-        }
-
-        // Decay Sentiment
-        (Object.keys(this.gameState.sentiment) as AssetType[]).forEach(type => {
-            this.gameState.sentiment[type] *= 0.90; // 10% fade per round
-        });
-
-        // Timer for the round
-        let timeLeft = ROUND_DURATION_MS / 1000;
-        this.roundTimer = setInterval(() => {
-            timeLeft--;
-            this.gameState.timeRemaining = timeLeft;
-
-            // Market Twist Trigger (Start of Round - 2s delay)
-            if (timeLeft === (ROUND_DURATION_MS / 1000) - 2) {
+        // Trigger event logic (only if no active event)
+        if (!this.gameState.activeEvent) {
+            // User request: "I choose 35 seconds... 5 seconds for the news".
+            // High probability to ensure the "News Phase" has content.
+            if (Math.random() < 0.8 && !this.gameState.activeScenario) {
                 this.generateMarketTwist();
             }
+        }
 
-            this.updatePrices();
+        // Initial sentiment decay at start of round
+        (Object.keys(this.gameState.sentiment) as AssetType[]).forEach(type => {
+            this.gameState.sentiment[type] *= 0.90;
+        });
+
+        let currentFrame = 0;
+        this.gameState.timeRemaining = ROUND_DURATION_MS / 1000;
+
+        // Loop for 35 seconds (frames)
+        this.roundTimer = setInterval(() => {
+            currentFrame++;
+            this.gameState.timeRemaining = Math.max(0, (TOTAL_FRAMES - currentFrame));
+
+            // Dedicated News Phase (First 5 Seconds: Time 35 -> 30)
+            if (this.gameState.timeRemaining < 30) {
+                this.updatePrices();
+            } else {
+                // Market Frozen for News Reading
+                // console.log("Market Frozen for News Phase");
+            }
+
             this.calculateRisk();
             this.broadcastState();
 
-            if (timeLeft <= 0) {
+            if (currentFrame >= TOTAL_FRAMES) {
                 if (this.roundTimer) clearInterval(this.roundTimer);
 
                 if (this.gameState.currentRound < this.gameState.maxRounds) {
@@ -505,45 +481,33 @@ export class GameManager {
 
     private updatePrices() {
         this.gameState.assets.forEach(asset => {
-            let volatility = asset.baseVolatility;
+            let change = 0;
 
-            // Scenario Effects
-            if (this.gameState.activeScenario) {
-                if (this.gameState.activeScenario.id === 'TECH_MOONSHOT' && asset.type === 'STOCK') {
-                    volatility *= 1.5; // More movement
-                    // Bias upwards?
-                } else if (this.gameState.activeScenario.id === 'CRYPTO_WINTER' && asset.type === 'CRYPTO') {
-                    volatility *= 2.0;
+            // 1. News Impact (if active event)
+            if (this.gameState.activeEvent && this.gameState.activeEvent.impact) {
+                const impact = this.gameState.activeEvent.impact[asset.type] || 0;
+                if (impact !== 0) {
+                    // Apply impact spread over the round frames
+                    change += impact / TOTAL_FRAMES;
                 }
             }
 
-            let change = (Math.random() - 0.5) * 2 * volatility;
+            // 2. Volatility (Randomness)
+            // Apply volatility_multiplier if present
+            let volMultiplier = 1.0;
+            if (this.gameState.activeEvent && this.gameState.activeEvent.volatility_multiplier) {
+                volMultiplier = this.gameState.activeEvent.volatility_multiplier;
+            }
 
-            // Apply Sentiment Drift
+            const randomMovement = (Math.random() - 0.5) * 0.015 * asset.baseVolatility * volMultiplier;
+            change += randomMovement;
+
+            // 3. Sentiment Drift (Longer term bias)
             const sentiment = this.gameState.sentiment[asset.type];
-            // sentiment = +100 -> +5% drift
-            // sentiment = -100 -> -5% drift
-            const sentimentDrift = (sentiment / 100) * 0.05;
+            const sentimentDrift = (sentiment / 100) * (0.05 / TOTAL_FRAMES);
             change += sentimentDrift;
 
-            // High sentiment = High volatility
-            if (Math.abs(sentiment) > 50) {
-                change += (Math.random() - 0.5) * 0.02; // Extra noise
-            }
-
-            // Apply Scenario Bias
-            if (this.gameState.activeScenario) {
-                if (this.gameState.activeScenario.id === 'TECH_MOONSHOT' && asset.type === 'STOCK') {
-                    change += 0.005; // Upward bias
-                } else if (this.gameState.activeScenario.id === 'CRYPTO_WINTER' && asset.type === 'CRYPTO') {
-                    change -= 0.01; // Downward crash
-                } else if (this.gameState.activeScenario.id === 'RATE_SHOCKWAVE' && asset.type === 'BOND') {
-                    change += 0.003;
-                } else if (this.gameState.activeScenario.id === 'GREEN_ENERGY_SURGE' && asset.type === 'ETF') {
-                    change += 0.005;
-                }
-            }
-
+            // Apply Update
             asset.currentPrice = asset.currentPrice * (1 + change);
             asset.history.push(asset.currentPrice);
             if (asset.history.length > 50) asset.history.shift();
@@ -554,24 +518,9 @@ export class GameManager {
             player.holdings.forEach(h => {
                 const asset = this.gameState.assets.find(a => a.id === h.assetId);
                 if (asset) {
-                    let price = asset.currentPrice;
-
-                    // Strategy Effects
-                    if (player.strategyId === 'HIGH_ROLLER' && (asset.type === 'STOCK' || asset.type === 'CRYPTO')) {
-                        // "Upside on growth assets" - maybe just visual value boost? 
-                        // Or actual value? Let's say they get a slight premium on valuation
-                        // This is tricky because selling needs to match. 
-                        // Let's keep it simple: No price modification here, handle in Sell or End Game?
-                        // Or maybe High Roller just means they picked volatile assets.
-                    }
-
-                    holdingsValue += h.quantity * price;
+                    holdingsValue += h.quantity * asset.currentPrice;
                 }
             });
-
-            // Strategy: Diversifier (+5% return per unique asset - applied at end usually, but maybe show in total value?)
-            // Let's keep totalValue as "Liquidation Value" for now.
-
             player.totalValue = player.cash + holdingsValue;
         });
     }
@@ -715,179 +664,228 @@ export class GameManager {
     }
 
     public handlePlayAgain() {
+        console.log("Received Play Again Request");
         this.resetGame();
         this.startPreMatch();
+    }
+
+    // Helper to map sectors to game assets
+    private mapSectorsToAssets(sectors: string[]): string[] {
+        const affected: string[] = [];
+        // Simple heuristic mapping
+        sectors.forEach(s => {
+            const lower = s.toLowerCase();
+            if (lower.includes('tech') || lower.includes('autom')) affected.push('STOCK');
+            if (lower.includes('finance')) affected.push('STOCK', 'ETF');
+            if (lower.includes('energy') || lower.includes('manufact')) affected.push('STOCK');
+            if (lower.includes('pharma')) affected.push('STOCK');
+            if (lower.includes('retail') || lower.includes('travel')) affected.push('STOCK');
+            if (lower.includes('agri')) affected.push('STOCK');
+        });
+        // Default if empty or unclear
+        if (affected.length === 0) affected.push('STOCK');
+        return Array.from(new Set(affected));
     }
 
     private async generateMarketTwist() {
         console.log("Generating Market Twist (The Oracle)...");
 
-        const applyTwist = (newsCard: any) => {
+        // 1. Generate Headline & Analysis
+        const prompt = `
+        You are a financial sentiment + market effect engine. 
+        Your job is to generate a realistic financial news headline and then analyze it to produce a JSON object used in a stock market simulation game.
+        
+        Generate a random, realistic news headline first. Then follow these instructions:
+
+        Input: The news headline you just generated.
+
+        Goals:
+        1. Determine overall sentiment as one label: 
+        ["Strong Positive", "Positive", "Neutral", "Negative", "Strong Negative"]
+
+        2. Identify the correct market sectors directly affected. 
+        Choose from:
+        ["Automobile", "Technology", "Finance", "Pharma", "Energy", "Retail", "Travel", "Agriculture", "Manufacturing"]
+
+        3. Based on sentiment, produce a realistic predicted stock price impact range: 
+        Strong Positive → +8 to +20
+        Positive → +3 to +12
+        Neutral → -1 to +1
+        Negative → -3 to -12
+        Strong Negative → -8 to -20
+        (Return as integer percentages, e.g. 8 for 8%)
+
+        4. Generate volatility_multiplier:
+        Strong Positive or Negative → 1.5
+        Positive or Negative → 1.2
+        Neutral → 1.0
+
+        5. Generate momentum_rounds:
+        Positive / Negative sentiment = 2 to 3 rounds
+        Strong sentiment = 3 to 4 rounds
+        Neutral = 1 round
+
+        Output must be valid JSON in this format:
+        {
+        "id": <random number>,
+        "news": "<headline>",
+        "emotion": "<sentiment>",
+        "sector": ["<sector1>", "<sector2>"],
+        "impact_range_percent": {
+            "min": <number>,
+            "max": <number>
+        },
+        "momentum_rounds": <number>,
+        "volatility_multiplier": <number>
+        }
+
+        Rules:
+        - Do not add explanation.
+        - Do not add extra text.
+        - Do not break JSON format.
+        - Numbers must be integers (except multipliers which can be float).
+        `;
+
+        try {
+            let data: any;
+
+            if (this.model) {
+                const result = await this.model.generateContent(prompt);
+                const response = await result.response;
+                const text = response.text();
+                const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+                data = JSON.parse(jsonStr);
+            } else {
+                console.warn("Gemini model not available. Using fallback twist.");
+                // Fallback Mock Data
+                data = {
+                    id: Math.floor(Math.random() * 1000),
+                    news: "Unexpected Market Mock Event",
+                    emotion: "Neutral",
+                    sector: ["Finance"],
+                    impact_range_percent: { min: -1, max: 1 },
+                    momentum_rounds: 1,
+                    volatility_multiplier: 1.0
+                };
+            }
+
+            console.log("Oracle Analysis:", data);
+
+            // Map to Game Event Structure
+            const affectedAssetsTypes = this.mapSectorsToAssets(data.sector || []);
+
+            // Calculate a specific impact target for this event instance (random within range)
+            const min = data.impact_range_percent.min;
+            const max = data.impact_range_percent.max;
+            // Random integer between min and max
+            const impactPercent = Math.floor(Math.random() * (max - min + 1)) + min;
+            const impactDecimal = impactPercent / 100;
+
+            const impactRecord: Partial<Record<AssetType, number>> = {};
+            affectedAssetsTypes.forEach(t => {
+                // @ts-ignore
+                impactRecord[t] = impactDecimal;
+            });
+
+            // Map emotion to simple sentiment for client compatibility
+            let simpleSentiment: 'positive' | 'negative' | 'neutral' = 'neutral';
+            if (data.emotion.includes('Positive')) simpleSentiment = 'positive';
+            if (data.emotion.includes('Negative')) simpleSentiment = 'negative';
+
             this.gameState.activeEvent = {
-                id: 'market-twist',
-                title: newsCard.title,
-                description: newsCard.explanation || `Breaking news impacting ${newsCard.affectedAssets.join(', ')}!`,
-                affectedAssets: newsCard.affectedAssets,
-                sentimentImpact: 0,
-                duration: newsCard.durationRounds || 1,
+                id: `evt-${Date.now()}`,
+                title: data.news,
+                description: `Sectors: ${data.sector.join(', ')}. Sentiment: ${data.emotion}.`,
+                affectedAssets: affectedAssetsTypes, // Broad types for now
+                sentiment: simpleSentiment,
+                intensity: data.emotion.includes('Strong') ? 'high' : 'medium', // heuristic
+                tags: data.sector,
+                impact: impactRecord,
+                duration: data.momentum_rounds,
+
+                // New Fields
+                emotion: data.emotion,
+                sectors: data.sector,
+                impact_range_percent: data.impact_range_percent,
+                momentum_rounds: data.momentum_rounds,
+                volatility_multiplier: data.volatility_multiplier,
+
                 hint: "The Oracle has spoken.",
                 emoji: "🔮"
             };
-            console.log("Twist Applied:", this.gameState.activeEvent.title);
 
-            // Apply immediate price impact
-            this.gameState.assets.forEach(asset => {
-                const impact = newsCard.sentimentImpact[asset.type] || 0;
-                if (impact !== 0) {
-                    const percentageChange = impact / 1000;
-                    asset.currentPrice *= (1 + percentageChange);
-                    asset.history.push(asset.currentPrice);
-                }
+            // Apply immediate sentiment score update
+            // Strong = +/- 30, Normal = +/- 15
+            let sentimentChange = 0;
+            if (data.emotion === 'Strong Positive') sentimentChange = 30;
+            else if (data.emotion === 'Positive') sentimentChange = 15;
+            else if (data.emotion === 'Negative') sentimentChange = -15;
+            else if (data.emotion === 'Strong Negative') sentimentChange = -30;
+
+            affectedAssetsTypes.forEach(t => {
+                // @ts-ignore
+                this.gameState.sentiment[t] += sentimentChange;
+                // @ts-ignore
+                this.gameState.sentiment[t] = Math.max(-100, Math.min(100, this.gameState.sentiment[t]));
             });
 
             this.broadcastState();
-        };
-
-        // 1. Gather Game State for The Oracle
-        const oracleState = {
-            round: this.gameState.currentRound,
-            assets: this.gameState.assets.map(a => ({ type: a.type, price: a.currentPrice, volatility: a.baseVolatility })),
-            sentiment: this.gameState.sentiment,
-            players: this.gameState.players.map(p => ({
-                id: p.id,
-                totalValue: p.totalValue,
-                riskScore: p.riskScore,
-                holdings: p.holdings
-            }))
-        };
-
-        if (!this.model) {
-            console.warn("Gemini model not available. Using fallback twist.");
-            const FALLBACK_TWISTS = [
-                { title: "New respiratory virus detected in East Asia — panic buying of medicine expected.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: 5, BOND: 5 }, explanation: "Fear drives volatility." },
-                { title: "Unexpected election results shake global investors’ confidence.", affectedAssets: ["STOCK", "CRYPTO"], sentimentImpact: { STOCK: -5, CRYPTO: 5 }, explanation: "Risk-off sentiment." },
-                { title: "Massive cyberattack shuts down major banks across Europe.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: -5, BOND: 5 }, explanation: "Safety seeking." },
-                { title: "China announces emergency economic stimulus package.", affectedAssets: ["STOCK", "ETF"], sentimentImpact: { STOCK: 5, ETF: 5 }, explanation: "Market excitement." },
-                { title: "Major earthquake disrupts oil supply routes; energy prices surge.", affectedAssets: ["ETF"], sentimentImpact: { ETF: 8 }, explanation: "Commodity shock." },
-                { title: "Historic breakthrough in Alzheimer’s treatment announced.", affectedAssets: ["STOCK", "ETF"], sentimentImpact: { STOCK: 5, ETF: 3 }, explanation: "Sector euphoria." },
-                { title: "Global ransomware attack causes distrust in digital security.", affectedAssets: ["CRYPTO"], sentimentImpact: { CRYPTO: -10 }, explanation: "Fear in digital assets." },
-                { title: "US and EU agree on new clean energy plan.", affectedAssets: ["ETF"], sentimentImpact: { ETF: 5 }, explanation: "Long-term momentum." },
-                { title: "Crypto leader releases zero-fee lightning payments.", affectedAssets: ["CRYPTO"], sentimentImpact: { CRYPTO: 8 }, explanation: "Bullish adoption." },
-                { title: "New financial regulation restricts margin trading.", affectedAssets: ["STOCK"], sentimentImpact: { STOCK: -5 }, explanation: "Bearish regulation." },
-                { title: "Large pension funds begin exiting risky tech stocks.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: -5, BOND: 3 }, explanation: "Institutional rotation." },
-                { title: "Major crypto exchange introduces proof-of-reserve transparency.", affectedAssets: ["CRYPTO"], sentimentImpact: { CRYPTO: 5 }, explanation: "Confidence spike." },
-                { title: "Corporate tax rates cut unexpectedly.", affectedAssets: ["STOCK"], sentimentImpact: { STOCK: 5 }, explanation: "Bullish policy." },
-                { title: "Global recession fears intensify as unemployment spikes.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: -8, BOND: 5 }, explanation: "Panic selling." },
-                { title: "New carbon credits marketplace launches successfully.", affectedAssets: ["ETF"], sentimentImpact: { ETF: 4 }, explanation: "Sustained growth." },
-                { title: "Bankruptcy of a leading AI startup shakes tech sector.", affectedAssets: ["STOCK"], sentimentImpact: { STOCK: -6 }, explanation: "Tech volatility." },
-                { title: "High-profile influencer pumps meme coin — retail rush begins.", affectedAssets: ["CRYPTO"], sentimentImpact: { CRYPTO: 15 }, explanation: "Pump and dump risk." },
-                { title: "War tensions ease after diplomatic agreement.", affectedAssets: ["STOCK", "CRYPTO", "ETF"], sentimentImpact: { STOCK: 5, CRYPTO: 5, ETF: 5, BOND: -2 }, explanation: "Relief rally." },
-                { title: "Housing sector weakens — mortgage defaults increase.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: -4, BOND: 3 }, explanation: "Sectoral stress." },
-                { title: "Breakthrough in battery recycling technology.", affectedAssets: ["ETF"], sentimentImpact: { ETF: 5 }, explanation: "Green tech optimism." }
-            ];
-            const twist = FALLBACK_TWISTS[Math.floor(Math.random() * FALLBACK_TWISTS.length)];
-            applyTwist(twist);
-            return;
-        }
-
-        try {
-            const prompt = `
-            You behave like a dynamic market force called “The Oracle”.
-            Your job during the match is to generate a realistic news event that influences the market in a way that:
-            - challenges predictable or emotional trading patterns
-            - rewards smart diversification, hedging and reaction to information
-            
-            You are not malicious and you do not “attack” the player, but you act like real market behaviour:
-            sometimes reinforcing trends, sometimes reversing them, sometimes shaking weak hands.
-
-            Current Game State:
-            ${JSON.stringify(oracleState)}
-
-            Per round, respond with a JSON:
-            {
-              "newsCard": {
-                "title": "... realistic news headline ...",
-                "affectedAssets": ["STOCK", "CRYPTO", "BOND", "ETF"],
-                "sentimentImpact": {
-                  "STOCK": +/-integer between -40 and +40,
-                  "CRYPTO": ...,
-                  "BOND": ...,
-                  "ETF": ...
-                },
-                "durationRounds": 1 or 2,
-                "explanation": "Why this news is realistic and how it impacts the market"
-              }
-            }
-
-            You must NOT give the player hints during the match.
-            You only observe and generate events that shape market behaviour.
-            `;
-
-            const result = await this.model.generateContent(prompt);
-            const response = await result.response;
-            const text = response.text();
-            const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-            const data = JSON.parse(jsonStr);
-
-            if (data.newsCard) {
-                applyTwist(data.newsCard);
-            } else {
-                console.warn("Invalid Oracle response format, using fallback.");
-                const FALLBACK_TWISTS = [
-                    { title: "Unexpected Market Rally!", affectedAssets: ["STOCK", "CRYPTO"], sentimentImpact: { STOCK: 5, CRYPTO: 5 }, explanation: "Random rally." }
-                ];
-                applyTwist(FALLBACK_TWISTS[0]);
-            }
 
         } catch (error) {
             console.error("Failed to generate market twist:", error);
             console.warn("Using fallback twist due to API error.");
 
             const FALLBACK_TWISTS = [
-                { title: "New respiratory virus detected in East Asia — panic buying of medicine expected.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: 5, BOND: 5 }, explanation: "Fear drives volatility." },
-                { title: "Unexpected election results shake global investors’ confidence.", affectedAssets: ["STOCK", "CRYPTO"], sentimentImpact: { STOCK: -5, CRYPTO: 5 }, explanation: "Risk-off sentiment." },
-                { title: "Massive cyberattack shuts down major banks across Europe.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: -5, BOND: 5 }, explanation: "Safety seeking." },
-                { title: "China announces emergency economic stimulus package.", affectedAssets: ["STOCK", "ETF"], sentimentImpact: { STOCK: 5, ETF: 5 }, explanation: "Market excitement." },
-                { title: "Major earthquake disrupts oil supply routes; energy prices surge.", affectedAssets: ["ETF"], sentimentImpact: { ETF: 8 }, explanation: "Commodity shock." },
-                { title: "Historic breakthrough in Alzheimer’s treatment announced.", affectedAssets: ["STOCK", "ETF"], sentimentImpact: { STOCK: 5, ETF: 3 }, explanation: "Sector euphoria." },
-                { title: "Global ransomware attack causes distrust in digital security.", affectedAssets: ["CRYPTO"], sentimentImpact: { CRYPTO: -10 }, explanation: "Fear in digital assets." },
-                { title: "US and EU agree on new clean energy plan.", affectedAssets: ["ETF"], sentimentImpact: { ETF: 5 }, explanation: "Long-term momentum." },
-                { title: "Crypto leader releases zero-fee lightning payments.", affectedAssets: ["CRYPTO"], sentimentImpact: { CRYPTO: 8 }, explanation: "Bullish adoption." },
-                { title: "New financial regulation restricts margin trading.", affectedAssets: ["STOCK"], sentimentImpact: { STOCK: -5 }, explanation: "Bearish regulation." },
-                { title: "Large pension funds begin exiting risky tech stocks.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: -5, BOND: 3 }, explanation: "Institutional rotation." },
-                { title: "Major crypto exchange introduces proof-of-reserve transparency.", affectedAssets: ["CRYPTO"], sentimentImpact: { CRYPTO: 5 }, explanation: "Confidence spike." },
-                { title: "Corporate tax rates cut unexpectedly.", affectedAssets: ["STOCK"], sentimentImpact: { STOCK: 5 }, explanation: "Bullish policy." },
-                { title: "Global recession fears intensify as unemployment spikes.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: -8, BOND: 5 }, explanation: "Panic selling." },
-                { title: "New carbon credits marketplace launches successfully.", affectedAssets: ["ETF"], sentimentImpact: { ETF: 4 }, explanation: "Sustained growth." },
-                { title: "Bankruptcy of a leading AI startup shakes tech sector.", affectedAssets: ["STOCK"], sentimentImpact: { STOCK: -6 }, explanation: "Tech volatility." },
-                { title: "High-profile influencer pumps meme coin — retail rush begins.", affectedAssets: ["CRYPTO"], sentimentImpact: { CRYPTO: 15 }, explanation: "Pump and dump risk." },
-                { title: "War tensions ease after diplomatic agreement.", affectedAssets: ["STOCK", "CRYPTO", "ETF"], sentimentImpact: { STOCK: 5, CRYPTO: 5, ETF: 5, BOND: -2 }, explanation: "Relief rally." },
-                { title: "Housing sector weakens — mortgage defaults increase.", affectedAssets: ["STOCK", "BOND"], sentimentImpact: { STOCK: -4, BOND: 3 }, explanation: "Sectoral stress." },
-                { title: "Breakthrough in battery recycling technology.", affectedAssets: ["ETF"], sentimentImpact: { ETF: 5 }, explanation: "Green tech optimism." }
+                {
+                    title: "Unexpected Market Volatility",
+                    affectedAssets: ["STOCK", "CRYPTO"],
+                    sentiment: "negative",
+                    intensity: "medium",
+                    tags: ["fear", "volatility"],
+                    impact: { "STOCK": -0.05, "CRYPTO": -0.05 },
+                    emotion: "Negative",
+                    sectors: ["Technology", "Finance"],
+                    impact_range_percent: { min: -3, max: -8 },
+                    momentum_rounds: 2,
+                    volatility_multiplier: 1.2
+                },
+                {
+                    title: "Institutional Buying Spree",
+                    affectedAssets: ["ETF", "BOND"],
+                    sentiment: "positive",
+                    intensity: "medium",
+                    tags: ["institutional", "volume"],
+                    impact: { "ETF": 0.03, "BOND": 0.02 },
+                    emotion: "Positive",
+                    sectors: ["Finance"],
+                    impact_range_percent: { min: 2, max: 6 },
+                    momentum_rounds: 2,
+                    volatility_multiplier: 1.2
+                }
             ];
-            const twist = FALLBACK_TWISTS[Math.floor(Math.random() * FALLBACK_TWISTS.length)];
+            // @ts-ignore
+            const data = FALLBACK_TWISTS[Math.floor(Math.random() * FALLBACK_TWISTS.length)];
 
             this.gameState.activeEvent = {
-                id: 'market-twist',
-                title: twist.title,
-                description: twist.explanation,
-                affectedAssets: twist.affectedAssets as AssetType[],
-                sentimentImpact: 0,
-                duration: 1,
+                id: `evt-fallback-${Date.now()}`,
+                title: data.title,
+                description: `Sectors: ${data.sectors.join(', ')}. Sentiment: ${data.emotion}.`,
+                affectedAssets: data.affectedAssets,
+                sentiment: data.sentiment as 'positive' | 'negative' | 'neutral',
+                intensity: data.intensity as 'low' | 'medium' | 'high',
+                tags: data.tags,
+                impact: data.impact as any,
+                duration: data.momentum_rounds,
+
+                emotion: data.emotion,
+                sectors: data.sectors,
+                impact_range_percent: data.impact_range_percent,
+                momentum_rounds: data.momentum_rounds,
+                volatility_multiplier: data.volatility_multiplier,
+
                 hint: "The Oracle has spoken.",
                 emoji: "🔮"
             };
-
-            // Apply immediate price impact for fallback
-            this.gameState.assets.forEach(asset => {
-                // @ts-ignore
-                const impact = twist.sentimentImpact[asset.type] || 0;
-                if (impact !== 0) {
-                    const percentageChange = impact / 1000;
-                    asset.currentPrice *= (1 + percentageChange);
-                    asset.history.push(asset.currentPrice);
-                }
-            });
 
             this.broadcastState();
         }

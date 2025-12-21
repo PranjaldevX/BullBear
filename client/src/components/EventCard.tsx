@@ -40,6 +40,21 @@ export const EventCard: React.FC<EventCardProps> = ({ event }) => {
                     {event.description}
                 </p>
 
+                {/* New Sentiment Engine Fields */}
+                {event.emotion && (
+                    <div className="flex gap-2 mb-3">
+                        <div className={`px-2 py-1 rounded text-xs font-bold uppercase ${event.emotion.includes('Positive') ? 'bg-green-900/50 text-green-300 border border-green-700' : event.emotion.includes('Negative') ? 'bg-red-900/50 text-red-300 border border-red-700' : 'bg-gray-800 text-gray-300 border border-gray-600'}`}>
+                            Sentiment: {event.emotion}
+                        </div>
+                        {event.momentum_rounds && (
+                            <div className="px-2 py-1 rounded text-xs font-bold uppercase bg-blue-900/50 text-blue-300 border border-blue-700">
+                                Duration: {event.momentum_rounds} Rounds
+                            </div>
+                        )}
+                    </div>
+                )}
+
+
                 {event.hint && (
                     <div className="bg-gray-900/50 p-2 rounded border border-gray-700 text-xs text-neon-blue italic flex gap-2 items-center mb-3">
                         <span>💡</span>
@@ -51,6 +66,12 @@ export const EventCard: React.FC<EventCardProps> = ({ event }) => {
                     {event.affectedAssets.map(id => (
                         <span key={id} className="text-[10px] bg-red-900/50 border border-red-700 px-2 py-1 rounded text-red-200 uppercase font-mono">
                             {id} IMPACT
+                        </span>
+                    ))}
+                    {/* Display mapped sectors if different from affectedAssets which are types now */}
+                    {event.sectors && event.sectors.map(sector => (
+                        <span key={sector} className="text-[10px] bg-purple-900/50 border border-purple-700 px-2 py-1 rounded text-purple-200 uppercase font-mono">
+                            {sector}
                         </span>
                     ))}
                 </div>
