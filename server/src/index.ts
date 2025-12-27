@@ -5,13 +5,25 @@ import cors from 'cors';
 import { GameManager } from './GameManager';
 
 const app = express();
-app.use(cors());
+
+const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://bullbeargameforfun.netlify.app"
+];
+
+app.use(cors({
+    origin: allowedOrigins,
+    methods: ["GET", "POST"],
+    credentials: true
+}));
 
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*", // Allow all for hackathon simplicity
-        methods: ["GET", "POST"]
+        origin: allowedOrigins,
+        methods: ["GET", "POST"],
+        credentials: true
     }
 });
 const gameManager = new GameManager(io);
