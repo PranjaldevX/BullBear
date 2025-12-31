@@ -68,69 +68,88 @@ export const INITIAL_ASSETS: Asset[] = [
         history: [7.50]
     },
 
-    // Crypto (Round 2) - Dynamic & Cheaper
+    // Crypto (Round 2) - Real Coins with Game-Mode Volatility
+    // ⚠️ DISCLAIMER: Prices are for GAME PURPOSES ONLY - Not real market prices!
     {
-        id: 'doge',
-        name: 'Dogecoin',
-        type: 'CRYPTO',
-        baseVolatility: 0.15, // High volatility
-        trendBias: 'SIDEWAYS',
-        currentPrice: 0.15,
-        history: [0.15]
-    },
-    {
-        id: 'shib',
-        name: 'Shiba Inu',
-        type: 'CRYPTO',
-        baseVolatility: 0.20, // Very high volatility
-        trendBias: 'UP',
-        currentPrice: 0.00003, // Very cheap
-        history: [0.00003]
-    },
-    {
-        id: 'pepe',
-        name: 'Pepe',
-        type: 'CRYPTO',
-        baseVolatility: 0.25,
-        trendBias: 'DOWN',
-        currentPrice: 0.000001,
-        history: [0.000001]
-    },
-    {
-        id: 'bonk',
-        name: 'Bonk',
+        id: 'sol',
+        name: 'Solana (SOL)',
         type: 'CRYPTO',
         baseVolatility: 0.18,
         trendBias: 'UP',
-        currentPrice: 0.000012,
-        history: [0.000012]
+        currentPrice: 185.00, // ~$185 USD
+        history: [185.00]
     },
     {
-        id: 'floki',
-        name: 'Floki',
+        id: 'ltc',
+        name: 'Litecoin (LTC)',
+        type: 'CRYPTO',
+        baseVolatility: 0.15,
+        trendBias: 'SIDEWAYS',
+        currentPrice: 105.00, // ~$105 USD
+        history: [105.00]
+    },
+    {
+        id: 'icp',
+        name: 'Internet Computer (ICP)',
         type: 'CRYPTO',
         baseVolatility: 0.22,
         trendBias: 'UP',
-        currentPrice: 0.00015,
-        history: [0.00015]
+        currentPrice: 11.50, // ~$11.50 USD
+        history: [11.50]
     },
     {
-        id: 'wif',
-        name: 'WIF',
+        id: 'etc',
+        name: 'Ethereum Classic (ETC)',
+        type: 'CRYPTO',
+        baseVolatility: 0.16,
+        trendBias: 'SIDEWAYS',
+        currentPrice: 27.00, // ~$27 USD
+        history: [27.00]
+    },
+    {
+        id: 'qnt',
+        name: 'Quant (QNT)',
+        type: 'CRYPTO',
+        baseVolatility: 0.20,
+        trendBias: 'UP',
+        currentPrice: 95.00, // ~$95 USD
+        history: [95.00]
+    },
+    {
+        id: 'egld',
+        name: 'MultiversX (EGLD)',
+        type: 'CRYPTO',
+        baseVolatility: 0.19,
+        trendBias: 'UP',
+        currentPrice: 38.00, // ~$38 USD
+        history: [38.00]
+    },
+    {
+        id: 'doge',
+        name: 'Dogecoin (DOGE)',
+        type: 'CRYPTO',
+        baseVolatility: 0.25,
+        trendBias: 'SIDEWAYS',
+        currentPrice: 0.32, // ~$0.32 USD
+        history: [0.32]
+    },
+    {
+        id: 'xvs',
+        name: 'Venus (XVS)',
+        type: 'CRYPTO',
+        baseVolatility: 0.22,
+        trendBias: 'DOWN',
+        currentPrice: 8.50, // ~$8.50 USD
+        history: [8.50]
+    },
+    {
+        id: 'ethfi',
+        name: 'Ether.fi (ETHFI)',
         type: 'CRYPTO',
         baseVolatility: 0.28,
         trendBias: 'UP',
-        currentPrice: 2.50,
-        history: [2.50]
-    },
-    {
-        id: 'mog',
-        name: 'Mog Coin',
-        type: 'CRYPTO',
-        baseVolatility: 0.30,
-        trendBias: 'SIDEWAYS',
-        currentPrice: 0.000001,
-        history: [0.000001]
+        currentPrice: 1.80, // ~$1.80 USD
+        history: [1.80]
     },
 
     // ETFs (Round 3)

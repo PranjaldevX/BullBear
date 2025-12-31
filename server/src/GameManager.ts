@@ -6,27 +6,79 @@ dotenv.config();
 import { Server } from 'socket.io';
 import { GameState, PlayerState, ClientToServerEvents, ServerToClientEvents, AvatarId, StrategyId, GamePhase, PreMatchSubPhase, Scenario, AssetType } from '@bvb/shared';
 import { INITIAL_ASSETS } from './data/assets';
-import { MARKET_EVENTS } from './data/events';
 import { AVATARS, STRATEGIES, SCENARIOS } from './data/gameData';
+import { NEWS_CARDS, NewsCard, newsCardToMarketEvent, getRandomNewsCard, SECTOR_TO_ASSETS } from './data/newsCards';
 
 const GAME_ROUNDS = 5;
-const ROUND_DURATION_MS = 35000; // 35 seconds
-const FRAMES_PER_SECOND = 1; // Update once per second
+const ROUND_DURATION_MS = 35000;
 const TOTAL_FRAMES = 35;
 const STARTING_CASH = 10000;
+const NEWS_PHASE_SECONDS = 5;
+const SHOCK_WINDOW_SECONDS = 7; // First 7 seconds of trading = shock window
+
+// ==================== EXTREME GAME MODE VOLATILITY ====================
+// NOT REAL LIFE - This is a game! Make it dramatic and fun!
+const BASE_VOLATILITY: Record<string, number> = {
+    'STOCK': 0.15,    // 15% base - DRAMATIC swings
+    'CRYPTO': 0.30,   // 30% base - WILD crypto action
+    'BOND': 0.06,     // 6% base - Even bonds move noticeably
+    'ETF': 0.10       // 10% base - ETFs swing too
+};
+
+// ==================== EXTREME SENTIMENT MULTIPLIERS ====================
+const SENTIMENT_MULTIPLIER: Record<string, number> = {
+    'very_positive': 3.5,   // MASSIVE rallies
+    'positive': 2.2,
+    'neutral': 0.3,         // Even neutral has some movement
+    'negative': -2.2,
+    'very_negative': -3.5   // MASSIVE crashes
+};
+
+// ==================== SECTOR SENSITIVITY ====================
+const SECTOR_SENSITIVITY: Record<string, number> = {
+    'technology': 2.0,
+    'finance': 1.8,
+    'energy': 1.9,
+    'crypto': 3.0,    // Crypto goes CRAZY
+    'bonds': 1.2,
+    'gold': -1.2      // Inverse correlation
+};
+
+// ==================== SAFETY RAILS ====================
+const MAX_ROUND_MOVE_PERCENT = 0.40;   // Max ±40% per round - BIG swings allowed
+const STABILIZATION_SECONDS = 3;        // Only 3 seconds stabilization
+const SHOCK_MULTIPLIER = 2.0;           // 2x amplification in shock window!
 
 export class GameManager {
     private io: Server<ClientToServerEvents, ServerToClientEvents, any, any>;
     private gameState: GameState;
-    private gameLoopInterval: NodeJS.Timeout | null = null;
     private roundTimer: NodeJS.Timeout | null = null;
     private preMatchTimer: NodeJS.Timeout | null = null;
     private genAI: GoogleGenerativeAI | null = null;
     private model: any = null;
+    private currentPhaseNext: (() => void) | null = null;
+    
+    // Track current news card
+    private currentNewsCard: NewsCard | null = null;
+    // Track base prices at round start
+    private roundStartPrices: Map<string, number> = new Map();
+    // Track last round's sentiment for chaos prevention
+    private lastRoundSentiment: string = 'neutral';
+    private consecutiveSameSentiment: number = 0;
 
     constructor(io: Server) {
         this.io = io;
-        this.gameState = {
+        this.gameState = this.createInitialState();
+
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (apiKey) {
+            this.genAI = new GoogleGenerativeAI(apiKey);
+            this.model = this.genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        }
+    }
+
+    private createInitialState(): GameState {
+        return {
             id: 'game-1',
             players: [],
             assets: JSON.parse(JSON.stringify(INITIAL_ASSETS)),
@@ -39,196 +91,18 @@ export class GameManager {
             activeAssetType: 'ALL',
             activeScenario: null,
             fearZoneActive: false,
-            sentiment: {
-                'STOCK': 0,
-                'CRYPTO': 0,
-                'BOND': 0,
-                'ETF': 0
-            }
+            sentiment: { 'STOCK': 0, 'CRYPTO': 0, 'BOND': 0, 'ETF': 0 }
         };
-
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (apiKey) {
-            this.genAI = new GoogleGenerativeAI(apiKey);
-            this.model = this.genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        } else {
-            console.warn("GEMINI_API_KEY not found in .env. Falling back to heuristic coach.");
-        }
     }
 
-    // ... (rest of class)
-
-    private async calculateResults() {
-        // Note: calculateResults is now async to await Gemini
-        const results = await Promise.all(this.gameState.players.map(async player => {
-            const initialValue = STARTING_CASH;
-            let finalValue = player.totalValue;
-
-            // Strategy: Diversifier Bonus
-            if (player.strategyId === 'DIVERSIFIER') {
-                const uniqueAssets = new Set(player.holdings.map(h => h.assetId)).size;
-                if (uniqueAssets >= 4) {
-                    finalValue += finalValue * 0.05; // 5% bonus
-                }
-            }
-
-            const roi = ((finalValue - initialValue) / initialValue) * 100;
-            const riskAdjustedScore = roi - (player.riskScore * 0.5);
-
-            let analysis;
-            try {
-                if (this.model) {
-                    analysis = await this.generateGeminiAnalysis(player);
-                } else {
-                    analysis = this.generateHeuristicAnalysis(player);
-                }
-            } catch (error) {
-                console.error("Gemini API Error:", error);
-                analysis = this.generateHeuristicAnalysis(player);
-            }
-
-            return {
-                playerId: player.id,
-                playerName: player.name,
-                finalValue,
-                riskScore: player.riskScore,
-                roi,
-                riskAdjustedScore,
-                rank: 0,
-                insights: analysis.playerSummary.whatYouDidWell.concat(analysis.playerSummary.mistakesAndOpportunities),
-                playerSummary: analysis.playerSummary,
-                learningCards: analysis.learningCards
-            };
-        }));
-
-        return results.sort((a, b) => b.riskAdjustedScore - a.riskAdjustedScore)
-            .map((result, index) => ({ ...result, rank: index + 1 }));
-    }
-
-    private async generateGeminiAnalysis(player: PlayerState): Promise<{ playerSummary: any, learningCards: any[] }> {
-        const prompt = `
-        You are an educational financial coach in a game called "Bull vs Bear Royale".
-        Analyze this player's game log and provide 3 sections of feedback: "whatYouDidWell", "mistakesAndOpportunities", and "improvementSuggestions".
-        BE BRUTALLY HONEST and SPECIFIC. Reference specific rounds or assets if possible (e.g., "You panic sold Bitcoin in Round 3").
-        
-        Also provide 3 "learningCards" with:
-        - "title": Short title
-        - "text": Brief summary (max 25 words)
-        - "deepDive": A paragraph explaining the financial concept in detail (max 80 words).
-        - "searchQuery": A Google search query to learn more about this topic.
-        
-        Return ONLY valid JSON. No markdown formatting. Structure:
-        {
-          "playerSummary": {
-            "whatYouDidWell": ["..."],
-            "mistakesAndOpportunities": ["..."],
-            "improvementSuggestions": ["..."]
-          },
-          "learningCards": [
-            { "title": "...", "text": "...", "deepDive": "...", "searchQuery": "..." }
-          ]
-        }
-
-        Game Context:
-        - Rounds: ${this.gameState.maxRounds}
-        - Events: ${JSON.stringify(MARKET_EVENTS.map(e => ({ id: e.id, title: e.title })))}
-        
-        Player Log:
-        ${JSON.stringify(player.transactionLog)}
-        
-        Final Stats:
-        - ROI: ${((player.totalValue - STARTING_CASH) / STARTING_CASH * 100).toFixed(1)}%
-        - Risk Score: ${player.riskScore}
-        `;
-
-        const result = await this.model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
-
-        // Clean up markdown code blocks if present
-        const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        return JSON.parse(jsonStr);
-    }
-
-    private generateHeuristicAnalysis(player: PlayerState): { playerSummary: any, learningCards: any[] } {
-        const summary = {
-            whatYouDidWell: [] as string[],
-            mistakesAndOpportunities: [] as string[],
-            improvementSuggestions: [] as string[]
-        };
-        const cards: any[] = [];
-
-        // Heuristic 1: Diversification
-        const uniqueAssets = new Set(player.holdings.map(h => h.assetId)).size;
-        if (uniqueAssets >= 3) {
-            summary.whatYouDidWell.push("You maintained a diversified portfolio, spreading risk across multiple assets.");
-            cards.push({
-                title: "Diversification Wins",
-                text: "Spreading capital reduces the impact of any single asset crashing.",
-                deepDive: "Diversification is a risk management strategy that mixes a wide variety of investments within a portfolio. A diversified portfolio contains a mix of distinct asset types and investment vehicles in an attempt at limiting exposure to any single asset or risk.",
-                searchQuery: "benefits of portfolio diversification"
-            });
-        } else if (uniqueAssets <= 1 && player.holdings.length > 0) {
-            summary.mistakesAndOpportunities.push("You concentrated all your capital in a single asset, exposing you to high risk.");
-            summary.improvementSuggestions.push("Aim to hold at least 2-3 different assets to balance your portfolio.");
-            cards.push({
-                title: "Don't Put All Eggs in One Basket",
-                text: "Concentrated portfolios can make you rich or broke. Diversification keeps you in the game.",
-                deepDive: "Concentration risk is the potential for a loss in value of an investment portfolio or a financial institution when an individual or group of exposures move together. The opposite of diversification.",
-                searchQuery: "investment concentration risk"
-            });
-        }
-
-        // Heuristic 2: Reaction to Sentiment
-        let badSentimentBuys = 0;
-        let goodSentimentBuys = 0;
-        player.transactionLog.forEach(tx => {
-            if (tx.type === 'BUY') {
-                if (tx.sentimentAtTime < -30) badSentimentBuys++;
-                if (tx.sentimentAtTime > 30) goodSentimentBuys++;
-            }
-        });
-
-        if (badSentimentBuys > 0) {
-            summary.whatYouDidWell.push("You were brave enough to buy when sentiment was low (contrarian investing).");
-        }
-        if (goodSentimentBuys > 2) {
-            summary.mistakesAndOpportunities.push("You often chased hype, buying when sentiment was already very high.");
-            summary.improvementSuggestions.push("Be careful buying when everyone is euphoric; a correction is often near.");
-            cards.push({
-                title: "Beware the Hype",
-                text: "When everyone is buying, the price is often near a peak. Look for value, not just momentum.",
-                deepDive: "FOMO (Fear Of Missing Out) often drives investors to buy assets at their peak. Smart investors look for 'value'—assets that are undervalued by the market—rather than just chasing what is currently popular.",
-                searchQuery: "FOMO trading psychology"
-            });
-        }
-
-        // Fallback content
-        if (summary.whatYouDidWell.length === 0) summary.whatYouDidWell.push("You actively participated in the market.");
-        if (summary.mistakesAndOpportunities.length === 0) summary.mistakesAndOpportunities.push("You played it safe, perhaps missing some growth opportunities.");
-        if (summary.improvementSuggestions.length === 0) summary.improvementSuggestions.push("Try experimenting with different strategies next time.");
-        if (cards.length === 0) cards.push({
-            title: "Keep Learning",
-            text: "Every trade is a lesson. Review your wins and losses to improve.",
-            deepDive: "Continuous learning is key to financial success. Markets evolve, and strategies that worked yesterday might not work today. Keep studying market trends and economic indicators.",
-            searchQuery: "how to learn stock trading"
-        });
-
-        return { playerSummary: summary, learningCards: cards.slice(0, 3) };
-    }
+    // ==================== PLAYER MANAGEMENT ====================
 
     public addPlayer(socketId: string, name: string) {
         console.log(`Adding player: ${name} (${socketId})`);
-
-        // Check if player with same name already exists
         const existingPlayerIndex = this.gameState.players.findIndex(p => p.name === name);
 
         if (existingPlayerIndex !== -1) {
-            console.log(`Player ${name} already exists. Updating socket ID.`);
-            // Update existing player's socket ID
             this.gameState.players[existingPlayerIndex].id = socketId;
-            // Ensure they are marked as connected/ready if needed? 
-            // For now just updating ID is enough to reclaim the session.
         } else {
             const newPlayer: PlayerState = {
                 id: socketId,
@@ -246,18 +120,74 @@ export class GameManager {
             };
             this.gameState.players.push(newPlayer);
         }
-
         this.broadcastState();
     }
 
     public removePlayer(socketId: string) {
         this.gameState.players = this.gameState.players.filter(p => p.id !== socketId);
         this.broadcastState();
-
         if (this.gameState.players.length === 0) {
-            console.log("All players disconnected. Resetting game.");
             this.resetGame();
         }
+    }
+
+    // ==================== PRE-MATCH FLOW ====================
+
+    public startPreMatch() {
+        if (this.gameState.phase !== 'PRE_MATCH') return;
+        console.log('Starting Pre-Match...');
+
+        this.runSubPhase('INTRO', 3, () => {
+            this.runSubPhase('AVATAR_SELECTION', 15, () => {
+                this.runSubPhase('STRATEGY_SELECTION', 15, () => {
+                    this.gameState.activeScenario = SCENARIOS[Math.floor(Math.random() * SCENARIOS.length)];
+                    this.runSubPhase('SCENARIO_TEASER', 5, () => {
+                        this.runSubPhase('TUTORIAL', 5, () => {
+                            this.startGame();
+                        });
+                    });
+                });
+            });
+        });
+    }
+
+    private runSubPhase(subPhase: PreMatchSubPhase, durationSeconds: number, next: () => void) {
+        console.log(`Running SubPhase: ${subPhase}`);
+        this.gameState.subPhase = subPhase;
+        this.gameState.timeRemaining = durationSeconds;
+        this.broadcastState();
+        this.currentPhaseNext = next;
+
+        let timeLeft = durationSeconds;
+        if (this.preMatchTimer) clearInterval(this.preMatchTimer);
+
+        this.preMatchTimer = setInterval(() => {
+            timeLeft--;
+            this.gameState.timeRemaining = timeLeft;
+            this.broadcastState();
+            if (timeLeft <= 0) this.advancePhase();
+        }, 1000);
+    }
+
+    private advancePhase() {
+        if (this.preMatchTimer) clearInterval(this.preMatchTimer);
+        this.preMatchTimer = null;
+        if (this.currentPhaseNext) {
+            const next = this.currentPhaseNext;
+            this.currentPhaseNext = null;
+            next();
+        }
+    }
+
+    private checkAllReady() {
+        if (this.gameState.players.length === 0) return;
+        let allReady = false;
+        if (this.gameState.subPhase === 'AVATAR_SELECTION') {
+            allReady = this.gameState.players.every(p => p.avatarId);
+        } else if (this.gameState.subPhase === 'STRATEGY_SELECTION') {
+            allReady = this.gameState.players.every(p => p.strategyId);
+        }
+        if (allReady) this.advancePhase();
     }
 
     public handleSelectAvatar(socketId: string, avatarId: AvatarId) {
@@ -278,90 +208,7 @@ export class GameManager {
         }
     }
 
-    public startPreMatch() {
-        console.log('Attempting to start Pre-Match. Current phase:', this.gameState.phase);
-        if (this.gameState.phase !== 'PRE_MATCH') return;
-
-        // Sequence: INTRO (3s) -> AVATAR (15s) -> STRATEGY (15s) -> SCENARIO (5s) -> TUTORIAL (5s) -> START
-        // Reduced static times as requested
-
-        this.runSubPhase('INTRO', 3, () => {
-            this.runSubPhase('AVATAR_SELECTION', 15, () => {
-                this.runSubPhase('STRATEGY_SELECTION', 15, () => {
-                    // Pick a random scenario
-                    const scenario = SCENARIOS[Math.floor(Math.random() * SCENARIOS.length)];
-                    this.gameState.activeScenario = scenario;
-
-                    this.runSubPhase('SCENARIO_TEASER', 5, () => {
-                        this.runSubPhase('TUTORIAL', 5, () => {
-                            this.startGame();
-                        });
-                    });
-                });
-            });
-        });
-    }
-
-    private runSubPhase(subPhase: PreMatchSubPhase, durationSeconds: number, next: () => void) {
-        console.log(`Running SubPhase: ${subPhase}`);
-        this.gameState.subPhase = subPhase;
-        this.gameState.timeRemaining = durationSeconds;
-        this.broadcastState();
-
-        // Store the next callback so we can call it early if everyone is ready
-        this.currentPhaseNext = next;
-
-        let timeLeft = durationSeconds;
-        if (this.preMatchTimer) clearInterval(this.preMatchTimer);
-
-        this.preMatchTimer = setInterval(() => {
-            timeLeft--;
-            this.gameState.timeRemaining = timeLeft;
-            this.broadcastState();
-
-            if (timeLeft <= 0) {
-                this.advancePhase();
-            }
-        }, 1000);
-    }
-
-    private currentPhaseNext: (() => void) | null = null;
-
-    private advancePhase() {
-        if (this.preMatchTimer) clearInterval(this.preMatchTimer);
-        this.preMatchTimer = null;
-        if (this.currentPhaseNext) {
-            const next = this.currentPhaseNext;
-            this.currentPhaseNext = null;
-            next();
-        }
-    }
-
-    private checkAllReady() {
-        if (this.gameState.players.length === 0) return;
-
-        let allReady = false;
-        if (this.gameState.subPhase === 'AVATAR_SELECTION') {
-            allReady = this.gameState.players.every(p => p.avatarId);
-        } else if (this.gameState.subPhase === 'STRATEGY_SELECTION') {
-            allReady = this.gameState.players.every(p => p.strategyId);
-        }
-
-        console.log(`Checking Ready: ${allReady} (Phase: ${this.gameState.subPhase}, Players: ${this.gameState.players.length})`);
-        if (!allReady) {
-            // Log who is not ready
-            const notReady = this.gameState.players.filter(p =>
-                (this.gameState.subPhase === 'AVATAR_SELECTION' && !p.avatarId) ||
-                (this.gameState.subPhase === 'STRATEGY_SELECTION' && !p.strategyId)
-            );
-            console.log("Waiting for:", notReady.map(p => p.name).join(', '));
-        }
-
-        if (allReady) {
-            console.log("All players ready! Advancing phase...");
-            this.advancePhase();
-        }
-    }
+    // ==================== GAME FLOW ====================
 
     public startGame() {
         console.log('Starting Game!');
@@ -369,47 +216,6 @@ export class GameManager {
         this.gameState.currentRound = 1;
         this.gameState.fearZoneActive = false;
         this.startRound();
-        this.broadcastState();
-    }
-
-    private resetGame() {
-        console.log("Resetting Game...");
-        if (this.roundTimer) {
-            clearInterval(this.roundTimer);
-            this.roundTimer = null;
-        }
-        if (this.preMatchTimer) {
-            clearInterval(this.preMatchTimer);
-            this.preMatchTimer = null;
-        }
-
-        this.gameState.currentRound = 0;
-        this.gameState.timeRemaining = 0;
-        this.gameState.activeEvent = null;
-        this.gameState.activeScenario = null;
-        this.gameState.fearZoneActive = false;
-        this.gameState.phase = 'PRE_MATCH';
-        this.gameState.subPhase = 'INTRO';
-        this.gameState.assets = JSON.parse(JSON.stringify(INITIAL_ASSETS));
-        this.gameState.sentiment = {
-            'STOCK': 0,
-            'CRYPTO': 0,
-            'BOND': 0,
-            'ETF': 0
-        };
-        this.gameState.players.forEach(p => {
-            p.cash = STARTING_CASH;
-            p.holdings = [];
-            p.riskScore = 0;
-            p.totalValue = STARTING_CASH;
-            p.avatarId = undefined;
-            p.strategyId = undefined;
-            p.powerUps = [
-                { id: 'future-glimpse', name: 'Risk Shield', description: '-20 Risk Score', usesLeft: 1 },
-                { id: 'market-freeze', name: 'Bailout', description: '+$1000 Cash', usesLeft: 1 }
-            ];
-            p.transactionLog = [];
-        });
     }
 
     private startRound() {
@@ -418,51 +224,61 @@ export class GameManager {
             return;
         }
 
-        this.gameState.timeRemaining = ROUND_DURATION_MS / 1000;
-
-        // Manage Active Event Duration
-        if (this.gameState.activeEvent && this.gameState.activeEvent.duration > 1) {
-            console.log(`Event ${this.gameState.activeEvent.title} continuing. Rounds left: ${this.gameState.activeEvent.duration}`);
-            this.gameState.activeEvent.duration--;
-        } else {
-            this.gameState.activeEvent = null;
-        }
+        console.log(`\n========== ROUND ${this.gameState.currentRound} ==========`);
 
         // Fear Zone in Final Round
         if (this.gameState.currentRound === this.gameState.maxRounds) {
             this.gameState.fearZoneActive = true;
         }
 
-        // Trigger event logic (only if no active event)
-        if (!this.gameState.activeEvent) {
-            // User request: "I choose 35 seconds... 5 seconds for the news".
-            // High probability to ensure the "News Phase" has content.
-            if (Math.random() < 0.8 && !this.gameState.activeScenario) {
-                this.generateMarketTwist();
-            }
-        }
-
-        // Initial sentiment decay at start of round
-        (Object.keys(this.gameState.sentiment) as AssetType[]).forEach(type => {
-            this.gameState.sentiment[type] *= 0.90;
+        // Store base prices for this round (for safety rails)
+        this.roundStartPrices.clear();
+        this.gameState.assets.forEach(asset => {
+            this.roundStartPrices.set(asset.id, asset.currentPrice);
         });
 
-        let currentFrame = 0;
-        this.gameState.timeRemaining = ROUND_DURATION_MS / 1000;
+        // Generate news card for this round
+        this.currentNewsCard = getRandomNewsCard();
+        this.gameState.activeEvent = newsCardToMarketEvent(this.currentNewsCard);
+        
+        // Track consecutive same sentiment for chaos prevention
+        const currentSentimentType = this.currentNewsCard.sentiment.includes('positive') ? 'positive' : 
+                                     this.currentNewsCard.sentiment.includes('negative') ? 'negative' : 'neutral';
+        if (currentSentimentType === this.lastRoundSentiment) {
+            this.consecutiveSameSentiment++;
+        } else {
+            this.consecutiveSameSentiment = 0;
+        }
+        this.lastRoundSentiment = currentSentimentType;
+        
+        console.log(`📰 NEWS: ${this.currentNewsCard.title}`);
+        console.log(`   Sentiment: ${this.currentNewsCard.sentiment} (consecutive: ${this.consecutiveSameSentiment})`);
+        console.log(`   Sectors: ${this.currentNewsCard.affectedSectors.join(', ')}`);
 
-        // Loop for 35 seconds (frames)
+        // Apply immediate sentiment change
+        this.applySentimentFromNews(this.currentNewsCard);
+        
+        // Apply sector rotation (unaffected sectors get small positive drift)
+        this.applySectorRotation(this.currentNewsCard);
+
+        // Reset timer
+        this.gameState.timeRemaining = TOTAL_FRAMES;
+        this.broadcastState();
+
+        let currentFrame = 0;
+
         this.roundTimer = setInterval(() => {
             currentFrame++;
-            this.gameState.timeRemaining = Math.max(0, (TOTAL_FRAMES - currentFrame));
+            this.gameState.timeRemaining = Math.max(0, TOTAL_FRAMES - currentFrame);
 
-            // Dedicated News Phase (First 5 Seconds: Time 35 -> 30)
-            if (this.gameState.timeRemaining < 30) {
-                this.updatePrices();
-            } else {
-                // Market Frozen for News Reading
-                // console.log("Market Frozen for News Phase");
+            const tradingSecondsElapsed = Math.max(0, currentFrame - NEWS_PHASE_SECONDS);
+            
+            if (currentFrame > NEWS_PHASE_SECONDS) {
+                // Trading phase - update prices
+                this.updatePricesGameMode(tradingSecondsElapsed);
             }
 
+            this.calculatePlayerValues();
             this.calculateRisk();
             this.broadcastState();
 
@@ -479,40 +295,177 @@ export class GameManager {
         }, 1000);
     }
 
-    private updatePrices() {
+
+    // ==================== GAME MODE PRICE MOVEMENT ====================
+
+    private updatePricesGameMode(tradingSecondsElapsed: number) {
+        const tradingWindowTotal = TOTAL_FRAMES - NEWS_PHASE_SECONDS; // 30 seconds
+        const isShockWindow = tradingSecondsElapsed <= SHOCK_WINDOW_SECONDS;
+        const isStabilizationPhase = tradingSecondsElapsed >= (tradingWindowTotal - STABILIZATION_SECONDS);
+
         this.gameState.assets.forEach(asset => {
+            const basePrice = this.roundStartPrices.get(asset.id) || asset.currentPrice;
             let change = 0;
 
-            // 1. News Impact (if active event)
-            if (this.gameState.activeEvent && this.gameState.activeEvent.impact) {
-                const impact = this.gameState.activeEvent.impact[asset.type] || 0;
-                if (impact !== 0) {
-                    // Apply impact spread over the round frames
-                    change += impact / TOTAL_FRAMES;
-                }
+            // 1. NEWS IMPACT (main driver)
+            if (this.currentNewsCard) {
+                const newsImpact = this.calculateNewsImpact(asset, tradingSecondsElapsed, tradingWindowTotal);
+                change += newsImpact;
             }
 
-            // 2. Volatility (Randomness)
-            // Apply volatility_multiplier if present
-            let volMultiplier = 1.0;
-            if (this.gameState.activeEvent && this.gameState.activeEvent.volatility_multiplier) {
-                volMultiplier = this.gameState.activeEvent.volatility_multiplier;
+            // 2. SHOCK WINDOW AMPLIFICATION (first 7 seconds)
+            if (isShockWindow) {
+                change *= SHOCK_MULTIPLIER;
             }
 
-            const randomMovement = (Math.random() - 0.5) * 0.015 * asset.baseVolatility * volMultiplier;
+            // 3. CONTROLLED RANDOMNESS
+            const randomFactor = this.getRandomFactor();
+            const baseVol = BASE_VOLATILITY[asset.type] || 0.05;
+            const randomMovement = (Math.random() - 0.5) * randomFactor * baseVol;
             change += randomMovement;
 
-            // 3. Sentiment Drift (Longer term bias)
+            // 4. SENTIMENT DRIFT
             const sentiment = this.gameState.sentiment[asset.type];
-            const sentimentDrift = (sentiment / 100) * (0.05 / TOTAL_FRAMES);
+            const sentimentDrift = (sentiment / 100) * 0.002; // Subtle continuous drift
             change += sentimentDrift;
 
-            // Apply Update
-            asset.currentPrice = asset.currentPrice * (1 + change);
-            asset.history.push(asset.currentPrice);
+            // 5. STABILIZATION PHASE (last 5 seconds)
+            if (isStabilizationPhase) {
+                // Reduce volatility, trend toward mean
+                change *= 0.3;
+                // Pull slightly toward round start price (mean reversion)
+                const currentDeviation = (asset.currentPrice - basePrice) / basePrice;
+                change -= currentDeviation * 0.05;
+            }
+
+            // 6. APPLY CHANGE
+            let newPrice = asset.currentPrice * (1 + change);
+
+            // 7. SAFETY RAILS - Max ±25% from round start
+            const maxPrice = basePrice * (1 + MAX_ROUND_MOVE_PERCENT);
+            const minPrice = basePrice * (1 - MAX_ROUND_MOVE_PERCENT);
+            newPrice = Math.max(minPrice, Math.min(maxPrice, newPrice));
+
+            // Ensure price never goes negative
+            newPrice = Math.max(0.000001, newPrice);
+
+            asset.currentPrice = newPrice;
+            asset.history.push(newPrice);
             if (asset.history.length > 50) asset.history.shift();
         });
+    }
 
+    private calculateNewsImpact(asset: any, tradingSecondsElapsed: number, tradingWindowTotal: number): number {
+        if (!this.currentNewsCard) return 0;
+
+        const news = this.currentNewsCard;
+        const sentimentMultiplier = SENTIMENT_MULTIPLIER[news.sentiment] || 0;
+        
+        // Check if this asset's sector is affected
+        let sectorMultiplier = 0;
+        const assetSector = this.getAssetSector(asset);
+        
+        if (news.affectedSectors.includes(assetSector)) {
+            sectorMultiplier = SECTOR_SENSITIVITY[assetSector] || 1.0;
+        } else {
+            // Unaffected assets have minimal impact
+            sectorMultiplier = 0.1;
+        }
+
+        // Time decay: 60% in first 10s, 30% in next 10s, 10% in last 10s
+        let timeDecayMultiplier = 1.0;
+        if (tradingSecondsElapsed <= 10) {
+            timeDecayMultiplier = 0.6 / 10; // Per second in early phase
+        } else if (tradingSecondsElapsed <= 20) {
+            timeDecayMultiplier = 0.3 / 10; // Per second in mid phase
+        } else {
+            timeDecayMultiplier = 0.1 / 10; // Per second in late phase
+        }
+
+        // Base impact calculation - MAKE IT DRAMATIC
+        const baseImpact = sentimentMultiplier * sectorMultiplier * timeDecayMultiplier * 0.025;
+        
+        return baseImpact;
+    }
+
+    private getAssetSector(asset: any): string {
+        // Map asset IDs to sectors
+        const techAssets = ['tcs', 'infy', 'it-bees'];
+        const financeAssets = ['hdfc', 'icici', 'sbi', 'bank-bees', 'us-treasury', 'corp-bond-aaa', 'muni-bond', 'junk-bond', 'tips-bond'];
+        const energyAssets = ['reliance', 'infra-bees', 'green-bond'];
+        const cryptoAssets = ['sol', 'ltc', 'icp', 'etc', 'qnt', 'egld', 'doge', 'xvs', 'ethfi'];
+        const goldAssets = ['gold-bees', 'sov-gold-bond'];
+
+        if (techAssets.includes(asset.id)) return 'technology';
+        if (financeAssets.includes(asset.id)) return 'finance';
+        if (energyAssets.includes(asset.id)) return 'energy';
+        if (cryptoAssets.includes(asset.id)) return 'crypto';
+        if (goldAssets.includes(asset.id)) return 'gold';
+        if (asset.type === 'BOND') return 'bonds';
+        if (asset.type === 'CRYPTO') return 'crypto';
+        
+        return 'finance'; // Default
+    }
+
+    private getRandomFactor(): number {
+        // If 2+ rounds of same sentiment, reduce randomness to prevent chaos stacking
+        if (this.consecutiveSameSentiment >= 2) {
+            return 0.06; // ±6%
+        }
+        return 0.12; // ±12%
+    }
+
+    private applySentimentFromNews(news: NewsCard) {
+        const sentimentValue = SENTIMENT_MULTIPLIER[news.sentiment] || 0;
+        
+        news.affectedSectors.forEach(sector => {
+            const assetTypes = this.getAssetTypesForSector(sector);
+            assetTypes.forEach(type => {
+                const sensitivity = SECTOR_SENSITIVITY[sector] || 1.0;
+                const change = sentimentValue * sensitivity * 15; // Amplified for game mode
+                this.gameState.sentiment[type as AssetType] = Math.max(-100, Math.min(100, 
+                    this.gameState.sentiment[type as AssetType] + change
+                ));
+            });
+        });
+
+        console.log(`   Sentiment after news:`, this.gameState.sentiment);
+    }
+
+    private applySectorRotation(news: NewsCard) {
+        // If a sector is hit negatively, unaffected sectors get small positive drift
+        if (news.sentiment.includes('negative')) {
+            const allSectors = ['technology', 'finance', 'energy', 'crypto', 'bonds', 'gold'];
+            const unaffectedSectors = allSectors.filter(s => !news.affectedSectors.includes(s));
+            
+            unaffectedSectors.forEach(sector => {
+                const assetTypes = this.getAssetTypesForSector(sector);
+                assetTypes.forEach(type => {
+                    // Small positive drift (+1-2%)
+                    const drift = (Math.random() * 0.01 + 0.01) * 100; // 1-2% as sentiment points
+                    this.gameState.sentiment[type as AssetType] = Math.min(100, 
+                        this.gameState.sentiment[type as AssetType] + drift
+                    );
+                });
+            });
+            
+            console.log(`   💫 Sector rotation: ${unaffectedSectors.join(', ')} getting positive drift`);
+        }
+    }
+
+    private getAssetTypesForSector(sector: string): string[] {
+        const mapping: Record<string, string[]> = {
+            'technology': ['STOCK'],
+            'finance': ['STOCK', 'ETF', 'BOND'],
+            'energy': ['STOCK', 'ETF'],
+            'crypto': ['CRYPTO'],
+            'bonds': ['BOND'],
+            'gold': ['ETF']
+        };
+        return mapping[sector] || ['STOCK'];
+    }
+
+    private calculatePlayerValues() {
         this.gameState.players.forEach(player => {
             let holdingsValue = 0;
             player.holdings.forEach(h => {
@@ -535,20 +488,16 @@ export class GameManager {
                 if (asset) {
                     const value = h.quantity * asset.currentPrice;
                     totalPortfolioValue += value;
-                    // Reduced multiplier from 1000 to 500 to lower risk score spikes
-                    totalRisk += value * asset.baseVolatility * 500;
+                    const vol = BASE_VOLATILITY[asset.type] || 0.05;
+                    totalRisk += value * vol * 300;
                 }
             });
 
             if (totalPortfolioValue > 0) {
-                // Cap risk score at 100, but make it harder to reach
                 let riskScore = Math.min(100, Math.round(totalRisk / totalPortfolioValue * 100));
-
-                // Strategy: Safety First (-10% risk penalty)
                 if (player.strategyId === 'SAFETY_FIRST') {
                     riskScore = Math.max(0, riskScore - 10);
                 }
-
                 player.riskScore = riskScore;
             } else {
                 player.riskScore = 0;
@@ -556,24 +505,8 @@ export class GameManager {
         });
     }
 
-    private async endGame() {
-        if (this.roundTimer) {
-            clearInterval(this.roundTimer);
-            this.roundTimer = null;
-        }
-        this.gameState.phase = 'FINISHED';
 
-        const results = await this.calculateResults();
-        this.io.emit('gameOver', results);
-        this.broadcastState();
-    }
-
-
-
-    private broadcastState() {
-        console.log('Broadcasting State. Phase:', this.gameState.phase, 'SubPhase:', this.gameState.subPhase);
-        this.io.emit('gameState', this.gameState);
-    }
+    // ==================== TRADING ====================
 
     public handleBuy(socketId: string, assetId: string, amount: number) {
         const player = this.gameState.players.find(p => p.id === socketId);
@@ -581,7 +514,11 @@ export class GameManager {
 
         if (!player || !asset || this.gameState.phase !== 'PLAYING') return;
 
-        const cost = amount * asset.currentPrice;
+        // Liquidity scaling: large orders cause self-slippage
+        const slippage = this.calculateSlippage(amount, asset.currentPrice);
+        const effectivePrice = asset.currentPrice * (1 + slippage);
+        const cost = amount * effectivePrice;
+
         if (player.cash >= cost) {
             player.cash -= cost;
             const holding = player.holdings.find(h => h.assetId === assetId);
@@ -593,18 +530,17 @@ export class GameManager {
                 player.holdings.push({
                     assetId,
                     quantity: amount,
-                    avgBuyPrice: asset.currentPrice
+                    avgBuyPrice: effectivePrice
                 });
             }
 
-            // Record Transaction
             player.transactionLog.push({
                 round: this.gameState.currentRound,
                 type: 'BUY',
                 assetId,
                 assetType: asset.type,
                 amount,
-                price: asset.currentPrice,
+                price: effectivePrice,
                 totalValue: cost,
                 eventActive: this.gameState.activeEvent?.id,
                 sentimentAtTime: this.gameState.sentiment[asset.type]
@@ -622,27 +558,40 @@ export class GameManager {
 
         const holding = player.holdings.find(h => h.assetId === assetId);
         if (holding && holding.quantity >= amount) {
-            const revenue = amount * asset.currentPrice;
+            // Liquidity scaling: large orders cause self-slippage
+            const slippage = this.calculateSlippage(amount, asset.currentPrice);
+            const effectivePrice = asset.currentPrice * (1 - slippage);
+            const revenue = amount * effectivePrice;
+
             player.cash += revenue;
             holding.quantity -= amount;
             if (holding.quantity <= 0) {
                 player.holdings = player.holdings.filter(h => h.assetId !== assetId);
             }
-            this.broadcastState();
 
-            // Record Transaction
             player.transactionLog.push({
                 round: this.gameState.currentRound,
                 type: 'SELL',
                 assetId,
                 assetType: asset.type,
                 amount,
-                price: asset.currentPrice,
+                price: effectivePrice,
                 totalValue: revenue,
                 eventActive: this.gameState.activeEvent?.id,
                 sentimentAtTime: this.gameState.sentiment[asset.type]
             });
+
+            this.broadcastState();
         }
+    }
+
+    private calculateSlippage(amount: number, price: number): number {
+        // Larger orders = more slippage (prevents big players from dominating)
+        const orderValue = amount * price;
+        if (orderValue > 5000) return 0.02;  // 2% slippage for orders > $5000
+        if (orderValue > 2000) return 0.01;  // 1% slippage for orders > $2000
+        if (orderValue > 1000) return 0.005; // 0.5% slippage for orders > $1000
+        return 0; // No slippage for small orders
     }
 
     public handleUsePowerUp(socketId: string, powerUpId: string) {
@@ -663,231 +612,138 @@ export class GameManager {
         this.broadcastState();
     }
 
+    // ==================== GAME END ====================
+
+    private async endGame() {
+        if (this.roundTimer) {
+            clearInterval(this.roundTimer);
+            this.roundTimer = null;
+        }
+        this.gameState.phase = 'FINISHED';
+
+        const results = await this.calculateResults();
+        this.io.emit('gameOver', results);
+        this.broadcastState();
+    }
+
+    private async calculateResults() {
+        const results = await Promise.all(this.gameState.players.map(async player => {
+            const initialValue = STARTING_CASH;
+            let finalValue = player.totalValue;
+
+            if (player.strategyId === 'DIVERSIFIER') {
+                const uniqueAssets = new Set(player.holdings.map(h => h.assetId)).size;
+                if (uniqueAssets >= 4) {
+                    finalValue += finalValue * 0.05;
+                }
+            }
+
+            const roi = ((finalValue - initialValue) / initialValue) * 100;
+            const riskAdjustedScore = roi - (player.riskScore * 0.5);
+
+            let analysis;
+            try {
+                if (this.model) {
+                    analysis = await this.generateGeminiAnalysis(player);
+                } else {
+                    analysis = this.generateHeuristicAnalysis(player);
+                }
+            } catch (error) {
+                analysis = this.generateHeuristicAnalysis(player);
+            }
+
+            return {
+                playerId: player.id,
+                playerName: player.name,
+                finalValue,
+                riskScore: player.riskScore,
+                roi,
+                riskAdjustedScore,
+                rank: 0,
+                insights: analysis.playerSummary.whatYouDidWell.concat(analysis.playerSummary.mistakesAndOpportunities),
+                playerSummary: analysis.playerSummary,
+                learningCards: analysis.learningCards
+            };
+        }));
+
+        return results.sort((a, b) => b.riskAdjustedScore - a.riskAdjustedScore)
+            .map((result, index) => ({ ...result, rank: index + 1 }));
+    }
+
+    private async generateGeminiAnalysis(player: PlayerState): Promise<{ playerSummary: any, learningCards: any[] }> {
+        const prompt = `You are a financial coach. Analyze this player's trades and provide feedback.
+        Return ONLY valid JSON with this structure:
+        {"playerSummary":{"whatYouDidWell":["..."],"mistakesAndOpportunities":["..."],"improvementSuggestions":["..."]},"learningCards":[{"title":"...","text":"...","deepDive":"...","searchQuery":"..."}]}
+        
+        Player trades: ${JSON.stringify(player.transactionLog)}
+        Final ROI: ${((player.totalValue - STARTING_CASH) / STARTING_CASH * 100).toFixed(1)}%
+        Risk Score: ${player.riskScore}`;
+
+        const result = await this.model.generateContent(prompt);
+        const text = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
+        return JSON.parse(text);
+    }
+
+    private generateHeuristicAnalysis(player: PlayerState): { playerSummary: any, learningCards: any[] } {
+        const summary = {
+            whatYouDidWell: ["You participated in the market!"],
+            mistakesAndOpportunities: ["Consider diversifying more."],
+            improvementSuggestions: ["Watch the news for trading signals."]
+        };
+        const cards = [{
+            title: "News Drives Markets",
+            text: "React quickly to news but don't panic sell.",
+            deepDive: "Markets overreact to news in the short term. Smart traders buy fear and sell greed.",
+            searchQuery: "how news affects stock prices"
+        }];
+        return { playerSummary: summary, learningCards: cards };
+    }
+
+    // ==================== RESET & UTILITIES ====================
+
+    private resetGame() {
+        console.log("Resetting Game...");
+        if (this.roundTimer) clearInterval(this.roundTimer);
+        if (this.preMatchTimer) clearInterval(this.preMatchTimer);
+        this.roundTimer = null;
+        this.preMatchTimer = null;
+
+        // Store existing players before reset
+        const existingPlayers = this.gameState.players;
+
+        // Reset game state
+        this.gameState = this.createInitialState();
+        this.gameState.assets = JSON.parse(JSON.stringify(INITIAL_ASSETS));
+        this.lastRoundSentiment = 'neutral';
+        this.consecutiveSameSentiment = 0;
+
+        // Restore players with reset stats
+        this.gameState.players = existingPlayers.map(p => ({
+            id: p.id,
+            name: p.name,
+            cash: STARTING_CASH,
+            holdings: [],
+            riskScore: 0,
+            powerUps: [
+                { id: 'future-glimpse', name: 'Risk Shield', description: '-20 Risk Score', usesLeft: 1 },
+                { id: 'market-freeze', name: 'Bailout', description: '+$1000 Cash', usesLeft: 1 }
+            ],
+            totalValue: STARTING_CASH,
+            avatarId: undefined,
+            strategyId: undefined,
+            ready: false,
+            transactionLog: []
+        }));
+    }
+
     public handlePlayAgain() {
-        console.log("Received Play Again Request");
+        console.log("Play Again requested");
         this.resetGame();
+        this.broadcastState(); // Broadcast reset state immediately
         this.startPreMatch();
     }
 
-    // Helper to map sectors to game assets
-    private mapSectorsToAssets(sectors: string[]): string[] {
-        const affected: string[] = [];
-        // Simple heuristic mapping
-        sectors.forEach(s => {
-            const lower = s.toLowerCase();
-            if (lower.includes('tech') || lower.includes('autom')) affected.push('STOCK');
-            if (lower.includes('finance')) affected.push('STOCK', 'ETF');
-            if (lower.includes('energy') || lower.includes('manufact')) affected.push('STOCK');
-            if (lower.includes('pharma')) affected.push('STOCK');
-            if (lower.includes('retail') || lower.includes('travel')) affected.push('STOCK');
-            if (lower.includes('agri')) affected.push('STOCK');
-        });
-        // Default if empty or unclear
-        if (affected.length === 0) affected.push('STOCK');
-        return Array.from(new Set(affected));
-    }
-
-    private async generateMarketTwist() {
-        console.log("Generating Market Twist (The Oracle)...");
-
-        // 1. Generate Headline & Analysis
-        const prompt = `
-        You are a financial sentiment + market effect engine. 
-        Your job is to generate a realistic financial news headline and then analyze it to produce a JSON object used in a stock market simulation game.
-        
-        Generate a random, realistic news headline first. Then follow these instructions:
-
-        Input: The news headline you just generated.
-
-        Goals:
-        1. Determine overall sentiment as one label: 
-        ["Strong Positive", "Positive", "Neutral", "Negative", "Strong Negative"]
-
-        2. Identify the correct market sectors directly affected. 
-        Choose from:
-        ["Automobile", "Technology", "Finance", "Pharma", "Energy", "Retail", "Travel", "Agriculture", "Manufacturing"]
-
-        3. Based on sentiment, produce a realistic predicted stock price impact range: 
-        Strong Positive → +8 to +20
-        Positive → +3 to +12
-        Neutral → -1 to +1
-        Negative → -3 to -12
-        Strong Negative → -8 to -20
-        (Return as integer percentages, e.g. 8 for 8%)
-
-        4. Generate volatility_multiplier:
-        Strong Positive or Negative → 1.5
-        Positive or Negative → 1.2
-        Neutral → 1.0
-
-        5. Generate momentum_rounds:
-        Positive / Negative sentiment = 2 to 3 rounds
-        Strong sentiment = 3 to 4 rounds
-        Neutral = 1 round
-
-        Output must be valid JSON in this format:
-        {
-        "id": <random number>,
-        "news": "<headline>",
-        "emotion": "<sentiment>",
-        "sector": ["<sector1>", "<sector2>"],
-        "impact_range_percent": {
-            "min": <number>,
-            "max": <number>
-        },
-        "momentum_rounds": <number>,
-        "volatility_multiplier": <number>
-        }
-
-        Rules:
-        - Do not add explanation.
-        - Do not add extra text.
-        - Do not break JSON format.
-        - Numbers must be integers (except multipliers which can be float).
-        `;
-
-        try {
-            let data: any;
-
-            if (this.model) {
-                const result = await this.model.generateContent(prompt);
-                const response = await result.response;
-                const text = response.text();
-                const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-                data = JSON.parse(jsonStr);
-            } else {
-                console.warn("Gemini model not available. Using fallback twist.");
-                // Fallback Mock Data
-                data = {
-                    id: Math.floor(Math.random() * 1000),
-                    news: "Unexpected Market Mock Event",
-                    emotion: "Neutral",
-                    sector: ["Finance"],
-                    impact_range_percent: { min: -1, max: 1 },
-                    momentum_rounds: 1,
-                    volatility_multiplier: 1.0
-                };
-            }
-
-            console.log("Oracle Analysis:", data);
-
-            // Map to Game Event Structure
-            const affectedAssetsTypes = this.mapSectorsToAssets(data.sector || []);
-
-            // Calculate a specific impact target for this event instance (random within range)
-            const min = data.impact_range_percent.min;
-            const max = data.impact_range_percent.max;
-            // Random integer between min and max
-            const impactPercent = Math.floor(Math.random() * (max - min + 1)) + min;
-            const impactDecimal = impactPercent / 100;
-
-            const impactRecord: Partial<Record<AssetType, number>> = {};
-            affectedAssetsTypes.forEach(t => {
-                // @ts-ignore
-                impactRecord[t] = impactDecimal;
-            });
-
-            // Map emotion to simple sentiment for client compatibility
-            let simpleSentiment: 'positive' | 'negative' | 'neutral' = 'neutral';
-            if (data.emotion.includes('Positive')) simpleSentiment = 'positive';
-            if (data.emotion.includes('Negative')) simpleSentiment = 'negative';
-
-            this.gameState.activeEvent = {
-                id: `evt-${Date.now()}`,
-                title: data.news,
-                description: `Sectors: ${data.sector.join(', ')}. Sentiment: ${data.emotion}.`,
-                affectedAssets: affectedAssetsTypes, // Broad types for now
-                sentiment: simpleSentiment,
-                intensity: data.emotion.includes('Strong') ? 'high' : 'medium', // heuristic
-                tags: data.sector,
-                impact: impactRecord,
-                duration: data.momentum_rounds,
-
-                // New Fields
-                emotion: data.emotion,
-                sectors: data.sector,
-                impact_range_percent: data.impact_range_percent,
-                momentum_rounds: data.momentum_rounds,
-                volatility_multiplier: data.volatility_multiplier,
-
-                hint: "The Oracle has spoken.",
-                emoji: "🔮"
-            };
-
-            // Apply immediate sentiment score update
-            // Strong = +/- 30, Normal = +/- 15
-            let sentimentChange = 0;
-            if (data.emotion === 'Strong Positive') sentimentChange = 30;
-            else if (data.emotion === 'Positive') sentimentChange = 15;
-            else if (data.emotion === 'Negative') sentimentChange = -15;
-            else if (data.emotion === 'Strong Negative') sentimentChange = -30;
-
-            affectedAssetsTypes.forEach(t => {
-                // @ts-ignore
-                this.gameState.sentiment[t] += sentimentChange;
-                // @ts-ignore
-                this.gameState.sentiment[t] = Math.max(-100, Math.min(100, this.gameState.sentiment[t]));
-            });
-
-            this.broadcastState();
-
-        } catch (error) {
-            console.error("Failed to generate market twist:", error);
-            console.warn("Using fallback twist due to API error.");
-
-            const FALLBACK_TWISTS = [
-                {
-                    title: "Unexpected Market Volatility",
-                    affectedAssets: ["STOCK", "CRYPTO"],
-                    sentiment: "negative",
-                    intensity: "medium",
-                    tags: ["fear", "volatility"],
-                    impact: { "STOCK": -0.05, "CRYPTO": -0.05 },
-                    emotion: "Negative",
-                    sectors: ["Technology", "Finance"],
-                    impact_range_percent: { min: -3, max: -8 },
-                    momentum_rounds: 2,
-                    volatility_multiplier: 1.2
-                },
-                {
-                    title: "Institutional Buying Spree",
-                    affectedAssets: ["ETF", "BOND"],
-                    sentiment: "positive",
-                    intensity: "medium",
-                    tags: ["institutional", "volume"],
-                    impact: { "ETF": 0.03, "BOND": 0.02 },
-                    emotion: "Positive",
-                    sectors: ["Finance"],
-                    impact_range_percent: { min: 2, max: 6 },
-                    momentum_rounds: 2,
-                    volatility_multiplier: 1.2
-                }
-            ];
-            // @ts-ignore
-            const data = FALLBACK_TWISTS[Math.floor(Math.random() * FALLBACK_TWISTS.length)];
-
-            this.gameState.activeEvent = {
-                id: `evt-fallback-${Date.now()}`,
-                title: data.title,
-                description: `Sectors: ${data.sectors.join(', ')}. Sentiment: ${data.emotion}.`,
-                affectedAssets: data.affectedAssets,
-                sentiment: data.sentiment as 'positive' | 'negative' | 'neutral',
-                intensity: data.intensity as 'low' | 'medium' | 'high',
-                tags: data.tags,
-                impact: data.impact as any,
-                duration: data.momentum_rounds,
-
-                emotion: data.emotion,
-                sectors: data.sectors,
-                impact_range_percent: data.impact_range_percent,
-                momentum_rounds: data.momentum_rounds,
-                volatility_multiplier: data.volatility_multiplier,
-
-                hint: "The Oracle has spoken.",
-                emoji: "🔮"
-            };
-
-            this.broadcastState();
-        }
+    private broadcastState() {
+        this.io.emit('gameState', this.gameState);
     }
 }

@@ -6,25 +6,38 @@ import { GameManager } from './GameManager';
 
 const app = express();
 
-const allowedOrigins = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "https://bullbeargameforfun.netlify.app"
-];
-
+// Enable CORS for all origins
 app.use(cors({
-    origin: allowedOrigins,
-    methods: ["GET", "POST"],
-    credentials: true
+    origin: '*',
+    methods: ['GET', 'POST'],
+    credentials: false
 }));
 
+// Health check endpoint for Render
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/', (req, res) => {
+    res.json({ 
+        status: 'Bull vs Bear Server Running',
+        version: '1.0.0',
+        endpoints: ['/health', '/start', '/reset']
+    });
+});
+
 const server = http.createServer(app);
+
 const io = new Server(server, {
     cors: {
-        origin: allowedOrigins,
-        methods: ["GET", "POST"],
-        credentials: true
-    }
+        origin: '*',
+        methods: ['GET', 'POST'],
+        credentials: false
+    },
+    transports: ['websocket', 'polling'],
+    allowEIO3: true,
+    pingTimeout: 60000,
+    pingInterval: 25000
 });
 const gameManager = new GameManager(io);
 
@@ -80,6 +93,9 @@ app.get('/reset', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+const HOST = '0.0.0.0'; // Important for Render
+
+server.listen(PORT, HOST, () => {
+    console.log(`Server running on ${HOST}:${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
