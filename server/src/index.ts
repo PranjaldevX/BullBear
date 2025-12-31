@@ -92,10 +92,9 @@ app.get('/reset', (req, res) => {
     res.send('Game reset and started');
 });
 
-const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0'; // Important for Render
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
-server.listen(PORT, HOST, () => {
-    console.log(`Server running on ${HOST}:${PORT}`);
+server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
