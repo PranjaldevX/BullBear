@@ -98,8 +98,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     playAgain: () => {
         const { socket } = get();
         if (socket) {
+            // Clear game results immediately so the modal closes
+            set({ gameResults: null });
             socket.emit('playAgain');
-            // Do NOT clear gameResults immediately. Wait for gameState update to clean up.
         }
     }
 }));

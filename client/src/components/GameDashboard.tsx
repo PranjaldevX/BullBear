@@ -4,7 +4,6 @@ import { Asset, AssetType } from '@bvb/shared';
 import { RiskMeter } from './RiskMeter';
 import { EventCard } from './EventCard';
 import { PowerUpBar } from './PowerUpBar';
-import { FinancialTermCard } from './FinancialTermCard';
 
 export const GameDashboard: React.FC = () => {
     const gameState = useGameStore(state => state.gameState);
@@ -18,7 +17,21 @@ export const GameDashboard: React.FC = () => {
     const [activeTab, setActiveTab] = useState<AssetType>('STOCK');
     const [showLearningCards, setShowLearningCards] = useState(false);
     const [showEventPopup, setShowEventPopup] = useState(false);
+    const [lastRound, setLastRound] = useState(0);
 
+    // Show news popup at the start of each round when a new event appears
+    React.useEffect(() => {
+        if (gameState?.activeEvent && gameState.currentRound !== lastRound) {
+            setLastRound(gameState.currentRound);
+            setShowEventPopup(true);
+            const timer = setTimeout(() => {
+                setShowEventPopup(false);
+            }, 5000);
+            return () => clearTimeout(timer);
+        }
+    }, [gameState?.activeEvent?.id, gameState?.currentRound, lastRound]);
+
+    // Also show popup when event changes mid-round
     React.useEffect(() => {
         if (gameState?.activeEvent) {
             setShowEventPopup(true);
@@ -48,11 +61,20 @@ export const GameDashboard: React.FC = () => {
                 </div>
             )}
 
-            {/* Event Popup (Center Screen) */}
+            {/* Event Popup (TOP of Screen) - Shows at start of each round */}
             {showEventPopup && gameState.activeEvent && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
-                    <div className="w-full max-w-md animate-slideUpFade pointer-events-auto transform scale-110">
-                        <EventCard event={gameState.activeEvent} />
+                <div className="fixed top-0 left-0 right-0 z-50 flex justify-center pt-4 pointer-events-none">
+                    <div className="w-full max-w-2xl animate-slideDownFade pointer-events-auto transform px-4">
+                        {/* Round Banner */}
+                        <div className="text-center mb-2">
+                            <div className="inline-block bg-neon-blue text-black font-bold text-xl px-6 py-1 rounded-full animate-pulse shadow-[0_0_30px_rgba(59,130,246,0.6)]">
+                                📰 ROUND {gameState.currentRound} - BREAKING NEWS 📰
+                            </div>
+                        </div>
+                        <EventCard event={gameState.activeEvent} isPopup={true} />
+                        <div className="text-center mt-2 text-gray-300 text-sm bg-black/80 py-2 rounded-b-lg">
+                            ⏱️ Market opens in <span className="text-neon-green font-bold">{Math.max(0, gameState.timeRemaining - 30)}s</span> - Read the news carefully!
+                        </div>
                     </div>
                 </div>
             )}
@@ -250,34 +272,42 @@ export const GameDashboard: React.FC = () => {
                 </div>
 
                 {/* Right: Leaderboard, Risk, Events */}
-                <div className="col-span-3 flex flex-col gap-4">
-                    <div className="bg-theme-surface rounded p-4 border border-gray-800 h-1/3 overflow-y-auto">
-                        <h2 className="text-lg font-bold mb-4 text-gray-300">Leaderboard</h2>
-                        <ul className="space-y-2">
+                <div className="col-span-3 flex flex-col gap-3 overflow-y-auto">
+                    {/* Leaderboard - Compact */}
+                    <div className="bg-theme-surface rounded p-3 border border-gray-800 max-h-[150px] overflow-y-auto flex-shrink-0">
+                        <h2 className="text-sm font-bold mb-2 text-gray-300">Leaderboard</h2>
+                        <ul className="space-y-1">
                             {sortedPlayers.map((p, idx) => (
-                                <li key={p.id} className={`flex justify-between items-center p-2 rounded ${p.id === me?.id ? 'bg-theme-surface-highlight border border-neon-blue' : ''}`}>
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-gray-500 font-mono">#{idx + 1}</span>
-                                        <span className="font-medium truncate max-w-[80px]">{p.name}</span>
-                                        {p.avatarId && <span className="text-xs bg-gray-600 px-1 rounded">{p.avatarId.substring(0, 3)}</span>}
+                                <li key={p.id} className={`flex justify-between items-center p-1.5 rounded text-sm ${p.id === me?.id ? 'bg-theme-surface-highlight border border-neon-blue' : ''}`}>
+                                    <div className="flex items-center gap-1">
+                                        <span className="text-gray-500 font-mono text-xs">#{idx + 1}</span>
+                                        <span className="font-medium truncate max-w-[60px]">{p.name}</span>
                                     </div>
-                                    <span className="font-mono text-sm">${p.totalValue.toFixed(0)}</span>
+                                    <span className="font-mono text-xs">${p.totalValue.toFixed(0)}</span>
                                 </li>
                             ))}
                         </ul>
                     </div>
 
-                    <RiskMeter score={me?.riskScore || 0} />
+                    {/* Risk Meter - Compact */}
+                    <div className="flex-shrink-0">
+                        <RiskMeter score={me?.riskScore || 0} />
+                    </div>
 
-                    {/* Show Event Card in Sidebar ONLY if NOT in popup mode */}
-                    {!showEventPopup && gameState.activeEvent && <EventCard event={gameState.activeEvent} />}
+                    {/* Show Event Card in Sidebar - FULL HEIGHT, scrollable content */}
+                    {!showEventPopup && gameState.activeEvent && (
+                        <div className="flex-1 overflow-y-auto">
+                            <EventCard event={gameState.activeEvent} isPopup={false} />
+                        </div>
+                    )}
 
-                    <PowerUpBar
-                        powerUps={me?.powerUps || []}
-                        onUse={(id) => usePowerUp(id)}
-                    />
-
-                    <FinancialTermCard />
+                    {/* Power-Ups - Compact */}
+                    <div className="flex-shrink-0">
+                        <PowerUpBar
+                            powerUps={me?.powerUps || []}
+                            onUse={(id) => usePowerUp(id)}
+                        />
+                    </div>
                 </div>
             </div>
         </div >
