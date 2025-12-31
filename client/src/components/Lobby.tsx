@@ -4,23 +4,53 @@ import { ParticleBackground } from './ParticleBackground';
 
 export const Lobby: React.FC = () => {
     const [name, setName] = useState('');
+    const [isConnecting, setIsConnecting] = useState(false);
     const connect = useGameStore(state => state.connect);
     const isConnected = useGameStore(state => state.isConnected);
 
     const handleJoin = (e: React.FormEvent) => {
         e.preventDefault();
         if (name.trim()) {
+            setIsConnecting(true);
             connect(name);
         }
     };
+
+    // Show connecting animation
+    if (isConnecting && !isConnected) {
+        return (
+            <div className="min-h-screen bg-theme-bg flex items-center justify-center text-white relative overflow-hidden">
+                <ParticleBackground />
+                <div className="text-center z-10 animate-slideUpFade">
+                    {/* Spinning loader */}
+                    <div className="mb-6 flex justify-center">
+                        <div className="w-16 h-16 border-4 border-neon-blue border-t-transparent rounded-full animate-spin"></div>
+                    </div>
+                    <h2 className="text-3xl font-bold mb-4 text-neon-blue">Connecting to Server...</h2>
+                    <div className="text-gray-400 font-mono animate-pulse">Establishing secure connection</div>
+                    <div className="mt-4 flex justify-center gap-1">
+                        <div className="w-2 h-2 bg-neon-blue rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                        <div className="w-2 h-2 bg-neon-blue rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                        <div className="w-2 h-2 bg-neon-blue rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     if (isConnected) {
         return (
             <div className="min-h-screen bg-theme-bg flex items-center justify-center text-white relative overflow-hidden">
                 <ParticleBackground />
                 <div className="text-center z-10 animate-slideUpFade">
-                    <h2 className="text-3xl font-bold mb-4 text-neon-blue animate-pulseGlow">Waiting for game to start...</h2>
-                    <div className="text-gray-400 font-mono">Connecting to server...</div>
+                    <div className="mb-4 text-5xl">✅</div>
+                    <h2 className="text-3xl font-bold mb-4 text-neon-green">Connected!</h2>
+                    <div className="text-gray-400 font-mono">Waiting for game to start...</div>
+                    <div className="mt-4 flex justify-center gap-1">
+                        <div className="w-2 h-2 bg-neon-green rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                        <div className="w-2 h-2 bg-neon-green rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                        <div className="w-2 h-2 bg-neon-green rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                    </div>
                 </div>
             </div>
         );

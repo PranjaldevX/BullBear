@@ -271,19 +271,19 @@ export const GameDashboard: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Right: Leaderboard, Risk, Events */}
-                <div className="col-span-3 flex flex-col gap-3 overflow-y-auto">
+                {/* Right: Leaderboard, News, Power-Ups */}
+                <div className="col-span-3 flex flex-col gap-2 overflow-y-auto">
                     {/* Leaderboard - Compact */}
-                    <div className="bg-theme-surface rounded p-3 border border-gray-800 max-h-[150px] overflow-y-auto flex-shrink-0">
-                        <h2 className="text-sm font-bold mb-2 text-gray-300">Leaderboard</h2>
-                        <ul className="space-y-1">
+                    <div className="bg-theme-surface rounded p-2 border border-gray-800 max-h-[120px] overflow-y-auto flex-shrink-0">
+                        <h2 className="text-xs font-bold mb-1 text-gray-300">Leaderboard</h2>
+                        <ul className="space-y-0.5">
                             {sortedPlayers.map((p, idx) => (
-                                <li key={p.id} className={`flex justify-between items-center p-1.5 rounded text-sm ${p.id === me?.id ? 'bg-theme-surface-highlight border border-neon-blue' : ''}`}>
+                                <li key={p.id} className={`flex justify-between items-center p-1 rounded text-xs ${p.id === me?.id ? 'bg-theme-surface-highlight border border-neon-blue' : ''}`}>
                                     <div className="flex items-center gap-1">
-                                        <span className="text-gray-500 font-mono text-xs">#{idx + 1}</span>
-                                        <span className="font-medium truncate max-w-[60px]">{p.name}</span>
+                                        <span className="text-gray-500 font-mono">#{idx + 1}</span>
+                                        <span className="font-medium truncate max-w-[50px]">{p.name}</span>
                                     </div>
-                                    <span className="font-mono text-xs">${p.totalValue.toFixed(0)}</span>
+                                    <span className="font-mono">${p.totalValue.toFixed(0)}</span>
                                 </li>
                             ))}
                         </ul>
@@ -294,14 +294,14 @@ export const GameDashboard: React.FC = () => {
                         <RiskMeter score={me?.riskScore || 0} />
                     </div>
 
-                    {/* Show Event Card in Sidebar - FULL HEIGHT, scrollable content */}
+                    {/* Show Event Card in Sidebar */}
                     {!showEventPopup && gameState.activeEvent && (
-                        <div className="flex-1 overflow-y-auto">
+                        <div className="flex-shrink-0">
                             <EventCard event={gameState.activeEvent} isPopup={false} />
                         </div>
                     )}
 
-                    {/* Power-Ups - Compact */}
+                    {/* Power-Ups - RIGHT AFTER NEWS CARD */}
                     <div className="flex-shrink-0">
                         <PowerUpBar
                             powerUps={me?.powerUps || []}
